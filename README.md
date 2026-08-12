@@ -51,6 +51,17 @@ pnpm tauri dev
 
 Desktop packaging targets macOS arm64/x64, Windows x64, and Linux x64. Install the normal [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/) first; Linux also needs WebKitGTK 4.1 and the AppIndicator development packages. The CI matrix compiles, tests, and packages all three desktop operating systems.
 
+### Releases
+
+Push an existing semantic version tag such as `v0.2.0` to run the Release workflow. It validates the source, builds macOS arm64/x64, Windows x64, Linux x64, and an Android arm64 preview APK, writes SHA-256 checksums, and creates one draft GitHub Release for final inspection:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow can also be started manually for an existing tag. Publishing the draft remains an explicit maintainer action. Desktop packages are currently unsigned and the Android asset is a debug-signed preview, so these assets are intended for testing until platform signing is configured.
+
 ### Android
 
 Android currently provides the manual SVG/source editor with local browser-backed persistence. PDF/Tectonic, Git history, project assets, and Claude are desktop-only and are visibly disabled instead of silently failing on mobile.
