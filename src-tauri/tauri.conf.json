@@ -1,0 +1,50 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "FigureIt",
+  "version": "0.1.0",
+  "identifier": "io.github.tho-kn.figureit",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev -- --host 0.0.0.0 --port 1420",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "FigureIt",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "app",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../resources/figureit-claude/.claude-plugin/plugin.json": "figureit-claude/.claude-plugin/plugin.json",
+      "../resources/figureit-claude/skills/diagnose-tikz/SKILL.md": "figureit-claude/skills/diagnose-tikz/SKILL.md",
+      "../resources/figureit-claude/skills/edit-figure/SKILL.md": "figureit-claude/skills/edit-figure/SKILL.md",
+      "../resources/figureit-claude/skills/layout-figure/SKILL.md": "figureit-claude/skills/layout-figure/SKILL.md",
+      "../resources/figureit-claude/skills/style-figure/SKILL.md": "figureit-claude/skills/style-figure/SKILL.md"
+    },
+    "category": "GraphicsAndDesign",
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

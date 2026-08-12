@@ -1,0 +1,8 @@
+{
+  "name": "figureit",
+  "description": "Design and editing guidance for FigureIt scenes using approval-gated scene operations.",
+  "version": "0.1.0",
+  "author": {
+    "name": "FigureIt contributors"
+  }
+}

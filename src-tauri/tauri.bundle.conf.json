@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "binaries/tectonic-aarch64-apple-darwin": "tectonic"
+    }
+  }
+}
