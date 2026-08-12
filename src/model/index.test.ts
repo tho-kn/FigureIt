@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applySceneTransaction,
   commitHistory,
+  connectorAnchorPoint,
   createDefaultDocument,
   createHistory,
   parseTikz,
@@ -102,7 +103,7 @@ describe('TikZ scene document', () => {
       operations: [{ type: 'update_properties', id: 'default-rect', geometry: { width: 5, height: 4 }, style: { fill: 'orange' }, transform: { rotate: 30 } }],
     })
     expect(result.ok).toBe(true)
-    expect(serializeDocument(result.document!)).toContain('rotate=30')
+    expect(serializeDocument(result.document!)).toContain('cm={0.866025,0.5,-0.5,0.866025,(1.334936,-0.982051)}')
     expect(parseTikz(serializeDocument(result.document!)).document.nodes[0]).toMatchObject({ geometry: { width: 5, height: 4 }, style: { fill: 'orange' }, transform: { rotate: 30 } })
   })
 
@@ -166,5 +167,99 @@ describe('TikZ scene document', () => {
     const source = serializeDocument(document)
     expect(source).toContain('\\draw[draw=black,->]')
     expect(source).not.toContain('][->]')
+  })
+
+  it('moves editable geometry and emits readable canonical numbers', () => {
+    const document = createDefaultDocument()
+    const moved = applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'move', id: 'default-rect', dx: 1 / 3, dy: -2 / 3 }] }).document!
+    expect(moved.nodes[0]).toMatchObject({ geometry: { x: 1 / 3, y: -2 / 3 }, transform: { translate: { x: 0, y: 0 } } })
+    expect(serializeDocument(moved)).toContain('(0.333333,-0.666667) rectangle (3.333333,1.333333);\n\\end{tikzpicture}')
+  })
+
+  it('keeps connector anchors attached when shapes move or resize and after reopen', () => {
+    const document = parseTikz(String.raw`\begin{tikzpicture}
+% figureit: id=a
+\draw (0,0) rectangle (2,2);
+% figureit: id=b
+\draw (6,0) rectangle (8,2);
+\end{tikzpicture}`).document
+    const inserted = applySceneTransaction(document, {
+      baseRevision: 0,
+      operations: [{ type: 'insert', node: {
+        id: 'wire', kind: 'connector', name: 'Connector', visible: true, locked: false,
+        transform: { translate: { x: 0, y: 0 }, rotate: 0, xScale: 1, yScale: 1 },
+        geometry: { points: [{ x: 2, y: 2 }, { x: 6, y: 0 }] },
+        bindings: { start: { nodeId: 'a', anchor: 'top-right' }, end: { nodeId: 'b', anchor: 'bottom-left' }, routing: 'elbow' },
+        style: { stroke: '#111111', strokeWidth: 0.06, dash: 'dotted', arrow: '<->' },
+        prefix: '\n', source: '',
+      } }],
+    }).document!
+    const changed = applySceneTransaction(inserted, {
+      baseRevision: 1,
+      operations: [
+        { type: 'move', id: 'a', dx: 1, dy: 0.5 },
+        { type: 'update_properties', id: 'b', geometry: { x: 7, y: -1 } },
+      ],
+    }).document!
+    expect(changed.nodes[2].geometry?.points).toEqual([{ x: 3, y: 2.5 }, { x: 7, y: -1 }])
+    const source = serializeDocument(changed)
+    expect(source).toContain('start=a%40top-right end=b%40bottom-left routing=elbow')
+    expect(source).toContain('dash pattern=on 0pt off 2pt,<->')
+    expect(source).toContain('(3,2.5) -| (7,-1)')
+    expect(parseTikz(source).document.nodes[2]).toMatchObject({
+      kind: 'connector',
+      bindings: { start: { nodeId: 'a', anchor: 'top-right' }, end: { nodeId: 'b', anchor: 'bottom-left' }, routing: 'elbow' },
+    })
+  })
+
+  it('round trips diagram primitives and gradient fills', () => {
+    const document = parseTikz(String.raw`\begin{tikzpicture}
+% figureit: id=shape kind=roundrect
+\draw[shade,left color=red,right color=blue,shading angle=45,rounded corners=0.2cm] (0,0) rectangle (3,2);
+\end{tikzpicture}`).document
+    expect(document.nodes[0]).toMatchObject({ kind: 'roundrect', style: { gradient: { start: 'red', end: 'blue', angle: 45 } } })
+    expect(serializeDocument(document)).toContain('left color=red,right color=blue,shading angle=45')
+  })
+
+  it('allows a locked layer to be unlocked but rejects other edits while locked', () => {
+    const document = createDefaultDocument()
+    document.nodes[0].locked = true
+    expect(applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'move', id: 'default-rect', dx: 1, dy: 0 }] })).toMatchObject({ ok: false, error: 'locked' })
+    expect(applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'set_metadata', id: 'default-rect', locked: false }] }).document?.nodes[0].locked).toBe(false)
+  })
+
+  it('serializes flips around the object centre and preserves the editable transform', () => {
+    const document = createDefaultDocument()
+    const flipped = applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'transform', id: 'default-rect', transform: { xScale: -1 } }] }).document!
+    const source = serializeDocument(flipped)
+    expect(source).toContain('xscale=-1')
+    expect(source).toContain('cm={-1,0,0,1,(3,0)}')
+    expect(parseTikz(source).document.nodes[0].transform.xScale).toBe(-1)
+  })
+
+  it('uses one lower-left geometry convention for ellipses, connectors, and TikZ', () => {
+    const document = parseTikz(String.raw`\begin{tikzpicture}
+% figureit: id=oval kind=ellipse
+\draw (4,3) ellipse (2 and 1);
+\end{tikzpicture}`).document
+    expect(document.nodes[0].geometry).toEqual({ x: 2, y: 2, width: 4, height: 2 })
+    expect(connectorAnchorPoint(document.nodes[0], 'left')).toEqual({ x: 2, y: 3 })
+    expect(serializeDocument(document)).toContain('(4,3) ellipse (2 and 1)')
+  })
+
+  it('keeps connector anchors on transformed shape connection sites', () => {
+    const node = createDefaultDocument().nodes[0]
+    node.geometry = { x: 0, y: 0, width: 2, height: 2 }
+    node.transform = { translate: { x: 3, y: 4 }, rotate: 90, xScale: 2, yScale: 1 }
+    expect(connectorAnchorPoint(node, 'right')).toMatchObject({ x: 4, y: 7 })
+  })
+
+  it('round trips image bounds without shifting the exported image', () => {
+    const document = parseTikz(String.raw`\begin{tikzpicture}
+% figureit: id=photo kind=image
+\node at (4,3) {\includegraphics[width=2cm,height=1cm]{assets/photo.png}};
+\end{tikzpicture}`).document
+    expect(document.nodes[0]).toMatchObject({ geometry: { x: 3, y: 2.5, width: 2, height: 1 }, image: { width: 2, height: 1 } })
+    expect(serializeDocument(document)).toContain('at (4,3) {\\includegraphics[width=2cm,height=1cm]')
   })
 })

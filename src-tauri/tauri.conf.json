@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm dev -- --host 0.0.0.0 --port 1420",
+    "beforeDevCommand": "pnpm exec vite --host 0.0.0.0 --port 1420",
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
@@ -27,7 +27,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": "app",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

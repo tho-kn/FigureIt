@@ -14,11 +14,18 @@ const source = String.raw`\begin{tikzpicture}
 \end{tikzpicture}
 `
 const memory = new Map<string, Project>()
+const localProjectKey = 'figureit:local-project'
 let nextHandle = 1
 let claudeConversation: string | undefined
 
 function isTauri() {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+function isMobile() {
+  return typeof navigator !== 'undefined' && /Android|iPhone|iPad/i.test(navigator.userAgent)
+}
+export function desktopFeaturesAvailable() {
+  return isTauri() && !isMobile()
 }
 
 function safeAsset(name: string) {
@@ -26,39 +33,53 @@ function safeAsset(name: string) {
 }
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T | undefined> {
-  return isTauri() ? invoke<T>(command, args) : undefined
+  return desktopFeaturesAvailable() ? invoke<T>(command, args) : undefined
+}
+
+function remember(project: Project) {
+  memory.set(project.handle, project)
+  if (isMobile()) localStorage.setItem(localProjectKey, JSON.stringify({ title: project.title, source: project.source }))
 }
 
 export async function createProject(): Promise<Project> {
   const result = await call<Project>('create_project')
   if (result) return result
   const project = { handle: `memory-${nextHandle++}`, title: 'Untitled', source }
-  memory.set(project.handle, project)
+  remember(project)
   return project
 }
 
 export async function openProject(): Promise<Project> {
   const result = await call<Project>('open_project')
-  return result ?? createProject()
+  if (result) return result
+  if (isMobile()) try {
+    const saved = JSON.parse(localStorage.getItem(localProjectKey) ?? 'null') as Partial<Project> | null
+    if (saved && typeof saved.source === 'string' && saved.source.length <= 1_000_000) {
+      const project = { handle: `memory-${nextHandle++}`, title: typeof saved.title === 'string' ? saved.title.slice(0, 80) : 'Local figure', source: saved.source }
+      remember(project)
+      return project
+    }
+  } catch { localStorage.removeItem(localProjectKey) }
+  return createProject()
 }
 
 export async function saveProject(handle: string, nextSource: string): Promise<void> {
   if (nextSource.length > 1_000_000) throw new Error('invalid_request')
-  if (isTauri()) { await call<void>('save_project', { handle, source: nextSource }); return }
+  if (desktopFeaturesAvailable()) { await call<void>('save_project', { handle, source: nextSource }); return }
   const project = memory.get(handle)
   if (!project) throw new Error('project_unavailable')
-  memory.set(handle, { ...project, source: nextSource })
+  remember({ ...project, source: nextSource })
 }
 
 export async function writeAsset(handle: string, name: string, bytes: Uint8Array): Promise<void> {
   safeAsset(name)
   if (bytes.byteLength > 1_000_000) throw new Error('invalid_request')
-  if (isTauri()) { await call<void>('write_asset', { handle, name, bytes: [...bytes] }); return }
+  if (desktopFeaturesAvailable()) { await call<void>('write_asset', { handle, name, bytes: [...bytes] }); return }
   if (!memory.has(handle)) throw new Error('project_unavailable')
 }
 
 export async function checkpointProject(handle: string): Promise<void> {
-  if (isTauri()) await call<void>('checkpoint_project', { handle })
+  if (desktopFeaturesAvailable()) await call<void>('checkpoint_project', { handle })
 }
 export async function listHistory(handle: string): Promise<Commit[]> {
   return (await call<Commit[]>('list_history', { handle })) ?? []
@@ -72,7 +93,7 @@ export async function compileProject(handle: string): Promise<CompileResult> {
 }
 export async function resetClaudeConversation(): Promise<void> {
   claudeConversation = undefined
-  if (isTauri()) await call<void>('reset_claude')
+  if (desktopFeaturesAvailable()) await call<void>('reset_claude')
 }
 export async function askClaude(scene: unknown, request: string): Promise<ClaudeResult> {
   if (!request || request.length > 100_000 || /(?:\/Users\/|\/home\/|\\\\|\0)/.test(request)) throw new Error('invalid_request')

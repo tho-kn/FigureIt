@@ -12,6 +12,7 @@ use std::{
     },
 };
 use tauri::{AppHandle, Manager, State};
+#[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 use thiserror::Error;
 
@@ -129,6 +130,7 @@ impl Drop for ClaudeConversation {
 struct ClaudeStore(Mutex<Option<(String, ClaudeConversation)>>);
 
 impl ProjectStore {
+    #[cfg(desktop)]
     fn insert(&self, info: &ProjectInfo, path: PathBuf) -> Result<(), BackendError> {
         self.0
             .lock()
@@ -185,12 +187,14 @@ fn read_source(project: &Path) -> Result<String, BackendError> {
 
 fn atomic_write(path: &Path, contents: &str) -> Result<(), BackendError> {
     let parent = path.parent().ok_or(BackendError::OperationFailed)?;
-    let temp = parent.join(format!(
-        ".{SOURCE}.{}",
-        NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&temp, contents).map_err(|_| BackendError::OperationFailed)?;
-    fs::rename(&temp, path).map_err(|_| BackendError::OperationFailed)
+    let mut temp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| BackendError::OperationFailed)?;
+    temp.write_all(contents.as_bytes())
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|_| BackendError::OperationFailed)?;
+    temp.persist(path)
+        .map(|_| ())
+        .map_err(|_| BackendError::OperationFailed)
 }
 
 /// Test-only path-taking core. Tauri commands use handles after this boundary.
@@ -602,6 +606,7 @@ fn restore_commit(
     restore(&store.get(&handle)?, handle, &commit)
 }
 
+#[cfg(desktop)]
 fn choose_folder(app: &AppHandle) -> Result<PathBuf, BackendError> {
     app.dialog()
         .file()
@@ -613,6 +618,7 @@ fn choose_folder(app: &AppHandle) -> Result<PathBuf, BackendError> {
 }
 
 #[tauri::command]
+#[cfg(desktop)]
 fn create_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
@@ -623,6 +629,7 @@ fn create_project(
     Ok(info)
 }
 #[tauri::command]
+#[cfg(desktop)]
 fn open_project(
     app: AppHandle,
     store: State<'_, ProjectStore>,
@@ -631,6 +638,24 @@ fn open_project(
     let info = open_project_at(path.clone())?;
     store.insert(&info, canonical_dir(&path)?)?;
     Ok(info)
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+fn create_project(
+    _app: AppHandle,
+    _store: State<'_, ProjectStore>,
+) -> Result<ProjectInfo, BackendError> {
+    Err(BackendError::SelectionRequired)
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+fn open_project(
+    _app: AppHandle,
+    _store: State<'_, ProjectStore>,
+) -> Result<ProjectInfo, BackendError> {
+    Err(BackendError::SelectionRequired)
 }
 
 #[tauri::command]
@@ -645,15 +670,22 @@ fn compile_project(
     fs::write(temp.path().join(COMPILE_SOURCE), COMPILE_WRAPPER)
         .map_err(|_| BackendError::OperationFailed)?;
     fs::create_dir(temp.path().join("out")).map_err(|_| BackendError::OperationFailed)?;
+    let executable_name = if cfg!(windows) {
+        "tectonic.exe"
+    } else {
+        "tectonic"
+    };
     let bundled = app
         .path()
         .resource_dir()
         .ok()
-        .map(|path| path.join("tectonic"))
+        .map(|path| path.join(executable_name))
         .filter(|path| path.is_file());
-    let Some(executable) =
-        bundled.or_else(|| cfg!(debug_assertions).then(|| PathBuf::from("tectonic")))
-    else {
+    let local = cfg!(debug_assertions)
+        .then(|| std::env::var_os("FIGUREIT_TECTONIC").map(PathBuf::from))
+        .flatten()
+        .filter(|path| path.is_file());
+    let Some(executable) = bundled.or(local) else {
         return Ok(CompileResult::Unavailable {
             message: "Tectonic is unavailable".into(),
         });
@@ -662,7 +694,6 @@ fn compile_project(
         .args(["--untrusted", "--outdir", "out", COMPILE_SOURCE])
         .current_dir(temp.path())
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
         .output()
     {
         Ok(output) => output,
@@ -956,6 +987,7 @@ mod tests {
         assert!(!CLAUDE_SCHEMA.contains("insert"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dropping_a_conversation_ends_its_process() {
         let workspace = tempfile::tempdir().expect("workspace");

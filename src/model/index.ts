@@ -1,10 +1,14 @@
 export type Transform = { translate: { x: number; y: number }; rotate: number; xScale: number; yScale: number }
 export type ScenePoint = { x: number; y: number }
 export type SceneGeometry = { x?: number; y?: number; width?: number; height?: number; points?: ScenePoint[] }
-export type SceneStyle = { stroke?: string; fill?: string; strokeWidth?: number; opacity?: number; dash?: string; arrow?: string }
+export type SceneGradient = { start: string; end: string; angle: number }
+export type SceneStyle = { stroke?: string; fill?: string; gradient?: SceneGradient; strokeWidth?: number; opacity?: number; dash?: string; arrow?: string }
 export type ImageProperties = { href: string; width?: number; height?: number }
 export const PX_PER_CM = 37.7952755906
-export type NodeKind = 'group' | 'rect' | 'ellipse' | 'line' | 'path' | 'text' | 'math' | 'connector' | 'image' | 'raw'
+export type NodeKind = 'group' | 'rect' | 'roundrect' | 'ellipse' | 'triangle' | 'diamond' | 'line' | 'path' | 'text' | 'math' | 'connector' | 'image' | 'raw'
+export type ConnectorAnchor = 'top-left' | 'top' | 'top-right' | 'right' | 'bottom-right' | 'bottom' | 'bottom-left' | 'left'
+export type ConnectorBinding = { nodeId: string; anchor: ConnectorAnchor }
+export type ConnectorBindings = { start?: ConnectorBinding; end?: ConnectorBinding; routing?: 'straight' | 'elbow' | 'curved' }
 
 type NodeBase = {
   id: string
@@ -17,6 +21,7 @@ type NodeBase = {
   style?: SceneStyle
   text?: string
   image?: ImageProperties
+  bindings?: ConnectorBindings
   prefix: string
   source: string
 }
@@ -29,7 +34,7 @@ export type SceneOperation =
   | { type: 'transform'; id: string; transform: Partial<Transform> }
   | { type: 'set_metadata'; id: string; name?: string; visible?: boolean; locked?: boolean }
   | { type: 'replace_source'; id: string; source: string }
-  | { type: 'update_properties'; id: string; geometry?: Partial<SceneGeometry>; style?: Partial<SceneStyle>; text?: string; image?: Partial<ImageProperties>; transform?: Partial<Transform> }
+  | { type: 'update_properties'; id: string; geometry?: Partial<SceneGeometry>; style?: Partial<SceneStyle>; text?: string; image?: Partial<ImageProperties>; bindings?: ConnectorBindings; transform?: Partial<Transform> }
   | { type: 'delete'; id: string }
   | { type: 'insert'; parentId?: string; node: SceneNode; index?: number }
   | { type: 'reorder'; id: string; parentId?: string; index: number }
@@ -51,17 +56,30 @@ export const DEFAULT_TIKZ_SOURCE = String.raw`\begin{tikzpicture}
 \end{tikzpicture}
 `
 
-type Metadata = Pick<SceneNode, 'id' | 'name' | 'visible' | 'locked'>
+type Metadata = Pick<SceneNode, 'id' | 'name' | 'visible' | 'locked' | 'kind' | 'bindings'> & { transform?: Transform }
+const nodeKinds: NodeKind[] = ['group', 'rect', 'roundrect', 'ellipse', 'triangle', 'diamond', 'line', 'path', 'text', 'math', 'connector', 'image', 'raw']
+const anchors: ConnectorAnchor[] = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left']
+const bindingFrom = (value?: string): ConnectorBinding | undefined => {
+  if (!value) return undefined
+  const [nodeId, anchor] = decodeURIComponent(value).split('@')
+  return nodeId && anchors.includes(anchor as ConnectorAnchor) ? { nodeId, anchor: anchor as ConnectorAnchor } : undefined
+}
 
 const metadataFrom = (line: string): Metadata | undefined => {
   if (!/^\s*%\s*figureit\s*:/i.test(line)) return undefined
   const values = Object.fromEntries([...line.matchAll(/([\w-]+)=("[^"]*"|'[^']*'|\S+)/g)].map(([, key, value]) => [key, value.replace(/^['"]|['"]$/g, '')]))
   let name = values.name
   try { if (name) name = decodeURIComponent(name) } catch { /* retain hand-written metadata */ }
-  return { id: values.id || newId(), name, visible: values.visible !== 'false', locked: values.locked === 'true' }
+  const kind = nodeKinds.includes(values.kind as NodeKind) ? values.kind as NodeKind : 'raw'
+  const start = bindingFrom(values.start); const end = bindingFrom(values.end)
+  const routing = ['straight', 'elbow', 'curved'].includes(values.routing) ? values.routing as ConnectorBindings['routing'] : undefined
+  const hasTransform = ['tx', 'ty', 'rotate', 'xscale', 'yscale'].some((key) => values[key] !== undefined)
+  const read = (key: string, fallback: number) => { const parsed = Number(values[key] ?? fallback); return Number.isFinite(parsed) ? parsed : fallback }
+  const transform = hasTransform ? { translate: { x: read('tx', 0), y: read('ty', 0) }, rotate: read('rotate', 0), xScale: read('xscale', 1), yScale: read('yscale', 1) } : undefined
+  return { id: values.id || newId(), name, visible: values.visible !== 'false', locked: values.locked === 'true', kind, ...((start || end || routing) ? { bindings: { start, end, routing } } : {}), ...(transform ? { transform } : {}) }
 }
 
-const metaLine = (node: SceneNode) => `% figureit: id=${node.id}${node.name ? ` name=${encodeURIComponent(node.name)}` : ''} visible=${node.visible} locked=${node.locked}\n`
+const metaLine = (node: SceneNode) => `% figureit: id=${node.id}${node.name ? ` name=${encodeURIComponent(node.name)}` : ''} visible=${node.visible} locked=${node.locked} kind=${node.kind}${node.bindings?.start ? ` start=${encodeURIComponent(`${node.bindings.start.nodeId}@${node.bindings.start.anchor}`)}` : ''}${node.bindings?.end ? ` end=${encodeURIComponent(`${node.bindings.end.nodeId}@${node.bindings.end.anchor}`)}` : ''}${node.bindings?.routing ? ` routing=${node.bindings.routing}` : ''}${isIdentity(node.transform) ? '' : ` tx=${decimal(node.transform.translate.x)} ty=${decimal(node.transform.translate.y)} rotate=${decimal(node.transform.rotate)} xscale=${decimal(node.transform.xScale)} yscale=${decimal(node.transform.yScale)}`}\n`
 const isIdentity = (t: Transform) => t.translate.x === 0 && t.translate.y === 0 && t.rotate === 0 && t.xScale === 1 && t.yScale === 1
 const cloneTransform = (t: Transform): Transform => ({ translate: { ...t.translate }, rotate: t.rotate, xScale: t.xScale, yScale: t.yScale })
 
@@ -93,7 +111,7 @@ const kindFor = (source: string): NodeKind => {
   const text = source.replace(/^\s*/, '')
   if (/\\node\b/.test(text)) return /includegraphics/.test(text) ? 'image' : /\$[^$]+\$/.test(text) ? 'math' : 'text'
   if (/\\(?:draw|path)\b/.test(text)) {
-    if (/rectangle\b/.test(text)) return 'rect'
+    if (/rectangle\b/.test(text)) return /rounded corners/.test(text) ? 'roundrect' : 'rect'
     if (/ellipse\b/.test(text)) return 'ellipse'
     if (!/--/.test(text)) return 'raw'
     if (/->|<-|<->/.test(text)) return 'connector'
@@ -112,17 +130,23 @@ const styleFor = (source: string): SceneStyle | undefined => {
     return match ? `#${match.slice(1).map((part) => Number(part).toString(16).padStart(2, '0')).join('')}` : undefined
   }
   const option = (names: string[]) => names.map((name) => options.match(new RegExp(`(?:^|,)\\s*${name}\\s*=\\s*([^,]+)`))?.[1]?.trim()).find(Boolean)
-  const style: SceneStyle = { stroke: xcolor('draw') ?? xcolor('stroke') ?? option(['draw', 'stroke']), fill: xcolor('fill') ?? option(['fill']), strokeWidth: number(option(['line width', 'stroke width'])), opacity: number(option(['opacity'])), dash: option(['dash pattern']), arrow: option(['->', '<-', '<->']) }
+  const start = xcolor('left color') ?? option(['left color'])
+  const end = xcolor('right color') ?? option(['right color'])
+  const arrow = options.match(/(?:^|,)\s*(<->|->|<-)\s*(?:,|$)/)?.[1]
+  const style: SceneStyle = { stroke: xcolor('draw') ?? xcolor('stroke') ?? option(['draw', 'stroke']), fill: xcolor('fill') ?? option(['fill']), ...(start && end ? { gradient: { start, end, angle: Number(option(['shading angle']) ?? 0) } } : {}), strokeWidth: number(option(['line width', 'stroke width'])), opacity: number(option(['opacity'])), dash: option(['dash pattern']), arrow }
   return Object.values(style).some((value) => value !== undefined) ? style : undefined
 }
 const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometry' | 'style' | 'text' | 'image' | 'transform'> => {
   const points = coordinates(source.replace(/\[[^\]]*\]/g, ''))
-  const geometry: SceneGeometry | undefined = kind === 'rect' && points.length >= 2 ? { x: points[0].x, y: points[0].y, width: points[1].x - points[0].x, height: points[1].y - points[0].y }
-    : kind === 'ellipse' && points.length >= 1 ? (() => { const radii = source.match(/ellipse\s*\(([-.\d]+)\s*and\s*([-.\d]+)\)/); return radii ? { x: points[0].x, y: points[0].y, width: Number(radii[1]) * 2, height: Number(radii[2]) * 2 } : { x: points[0].x, y: points[0].y } })()
+  const bounds = points.length ? { x: Math.min(...points.map((point) => point.x)), y: Math.min(...points.map((point) => point.y)), width: Math.max(...points.map((point) => point.x)) - Math.min(...points.map((point) => point.x)), height: Math.max(...points.map((point) => point.y)) - Math.min(...points.map((point) => point.y)) } : undefined
+  let geometry: SceneGeometry | undefined = ['rect', 'roundrect'].includes(kind) && points.length >= 2 ? { x: points[0].x, y: points[0].y, width: points[1].x - points[0].x, height: points[1].y - points[0].y }
+      : kind === 'ellipse' && points.length >= 1 ? (() => { const radii = source.match(/ellipse\s*\(([-.\d]+)\s*and\s*([-.\d]+)\)/); if (!radii) return { x: points[0].x, y: points[0].y }; const rx = Number(radii[1]); const ry = Number(radii[2]); return { x: points[0].x - rx, y: points[0].y - ry, width: rx * 2, height: ry * 2 } })()
+      : ['triangle', 'diamond'].includes(kind) && bounds ? bounds
       : ['line', 'path', 'connector'].includes(kind) ? { points } : ['text', 'math', 'image'].includes(kind) && points[0] ? { x: points[0].x, y: points[0].y } : undefined
   const content = source.match(/\{([^{}]*)\}\s*;?\s*(?:%.*)?$/)?.[1]
   const imageMatch = source.match(/\\includegraphics(?:\[([^\]]*)\])?\{([^}]+)\}/)
   const image = imageMatch ? { href: imageMatch[2], width: number(imageMatch[1]?.match(/width\s*=\s*([-.\d]+cm?)/)?.[1]), height: number(imageMatch[1]?.match(/height\s*=\s*([-.\d]+cm?)/)?.[1]) } : undefined
+  if (kind === 'image' && image && points[0]) geometry = { x: points[0].x - (image.width ?? 0) / 2, y: points[0].y - (image.height ?? 0) / 2, ...(image.width === undefined ? {} : { width: image.width }), ...(image.height === undefined ? {} : { height: image.height }) }
   return { ...(geometry ? { geometry } : {}), ...(styleFor(source) ? { style: styleFor(source) } : {}), ...((kind === 'text' || kind === 'math') && content ? { text: content } : {}), ...(image ? { image } : {}), transform: scopeTransform(source) }
 }
 
@@ -132,7 +156,7 @@ const scopeTransform = (source: string): Transform => {
   const shift = option.match(/shift=\{?\(([-.\d]+),\s*([-.\d]+)\)\}?/)
   if (shift) t.translate = { x: Number(shift[1]), y: Number(shift[2]) }
   const read = (name: string, fallback: number) => Number(option.match(new RegExp(`${name}\\s*=\\s*([-.\\d]+)`))?.[1] ?? fallback)
-  t.rotate = read('rotate', 0); t.xScale = read('xscale', 1); t.yScale = read('yscale', 1)
+  t.rotate = Number(option.match(/rotate\s+around\s*=\s*\{?\s*([-.\d]+)/)?.[1] ?? read('rotate', 0)); t.xScale = read('xscale', 1); t.yScale = read('yscale', 1)
   return t
 }
 
@@ -154,44 +178,71 @@ export const parseTikz = (source: string): ParseResult => {
     const parsedMeta = metadataFrom(token)
     if (parsedMeta) { metadata = parsedMeta; continue }
     if (/^\s*\\begin\{scope\}/.test(token)) {
-      const group: SceneNode = { id: metadata?.id ?? newId(), kind: 'group', name: metadata?.name, visible: metadata?.visible ?? true, locked: metadata?.locked ?? false, transform: scopeTransform(token), prefix: pending, source: '', children: [] }
+      const group: SceneNode = { id: metadata?.id ?? newId(), kind: 'group', name: metadata?.name, visible: metadata?.visible ?? true, locked: metadata?.locked ?? false, transform: metadata?.transform ?? scopeTransform(token), prefix: pending, source: '', children: [] }
       pending = ''; metadata = undefined; stack.at(-1)!.push(group); groups.push(group); stack.push(group.children!)
       continue
     }
     if (/^\s*\\end\{scope\}/.test(token) && stack.length > 1) { groups.at(-1)!.source = token; groups.pop(); stack.pop(); continue }
     if (!/\S/.test(token)) { pending += token; continue }
-    const kind = kindFor(token)
+    const detectedKind = kindFor(token)
+    const kind = metadata?.kind && metadata.kind !== 'raw' ? metadata.kind : detectedKind
     const itemMetadata = kind === 'raw' ? undefined : metadata
-    stack.at(-1)!.push({ id: itemMetadata?.id ?? newId(), kind, name: itemMetadata?.name, visible: itemMetadata?.visible ?? true, locked: itemMetadata?.locked ?? false, prefix: pending, source: token, ...propertiesFor(kind, token) })
+    const properties = propertiesFor(kind, token)
+    stack.at(-1)!.push({ id: itemMetadata?.id ?? newId(), kind, name: itemMetadata?.name, visible: itemMetadata?.visible ?? true, locked: itemMetadata?.locked ?? false, bindings: itemMetadata?.bindings, prefix: pending, source: token, ...properties, ...(itemMetadata?.transform ? { transform: itemMetadata.transform } : {}) })
     pending = ''; if (itemMetadata) metadata = undefined
   }
   if (pending && /\S/.test(pending)) roots.push({ id: newId(), kind: 'raw', visible: true, locked: false, transform: identity(), prefix: '', source: pending })
   return { document: { revision: 0, prefix, nodes: roots, suffix: pending && !/\S/.test(pending) ? pending + suffix : suffix }, errors: stack.length === 1 ? [] : ['Unclosed scope'] }
 }
 
-const transformOptions = (t: Transform) => `shift={(${t.translate.x},${t.translate.y})},rotate=${t.rotate},xscale=${t.xScale},yscale=${t.yScale}`
+const decimal = (value: number) => String(Math.abs(value) < 1e-9 ? 0 : Number(value.toFixed(6)))
+const transformOptions = (t: Transform) => `shift={(${decimal(t.translate.x)},${decimal(t.translate.y)})},rotate=${decimal(t.rotate)},xscale=${decimal(t.xScale)},yscale=${decimal(t.yScale)}`
+const affineOption = (t: Transform, center: ScenePoint) => {
+  const radians = t.rotate * Math.PI / 180; const cos = Math.cos(radians); const sin = Math.sin(radians)
+  const a = cos * t.xScale; const b = sin * t.xScale; const c = -sin * t.yScale; const d = cos * t.yScale
+  const x = t.translate.x + center.x - a * center.x - c * center.y
+  const y = t.translate.y + center.y - b * center.x - d * center.y
+  return `cm={${decimal(a)},${decimal(b)},${decimal(c)},${decimal(d)},(${decimal(x)},${decimal(y)})}`
+}
 const tikzColor = (color: string) => /^#[\da-f]{6}$/i.test(color)
   ? `{rgb,255:red,${Number.parseInt(color.slice(1, 3), 16)};green,${Number.parseInt(color.slice(3, 5), 16)};blue,${Number.parseInt(color.slice(5, 7), 16)}}`
   : color
 const inlineOptions = (node: SceneNode) => {
   const style = node.style
-  const parts = [style?.stroke && `draw=${tikzColor(style.stroke)}`, style?.fill && `fill=${tikzColor(style.fill)}`, style?.strokeWidth !== undefined && `line width=${style.strokeWidth}cm`, style?.opacity !== undefined && `opacity=${style.opacity}`, style?.dash && `dash pattern=${style.dash}`, style?.arrow ?? (node.kind === 'connector' ? '->' : undefined), !node.visible && 'opacity=0']
-  if (!isIdentity(node.transform)) parts.push(`shift={(${node.transform.translate.x},${node.transform.translate.y})}`, `rotate=${node.transform.rotate}`, `xscale=${node.transform.xScale}`, `yscale=${node.transform.yScale}`)
+  const dash = style?.dash === 'dashed' ? 'on 4pt off 3pt' : style?.dash === 'dotted' ? 'on 0pt off 2pt' : style?.dash
+  const parts = [style?.stroke && `draw=${tikzColor(style.stroke)}`, !style?.gradient && style?.fill && `fill=${tikzColor(style.fill)}`, style?.gradient && 'shade', style?.gradient && `left color=${tikzColor(style.gradient.start)}`, style?.gradient && `right color=${tikzColor(style.gradient.end)}`, style?.gradient && `shading angle=${decimal(style.gradient.angle)}`, node.kind === 'roundrect' && 'rounded corners=0.2cm', style?.strokeWidth !== undefined && `line width=${decimal(style.strokeWidth)}cm`, style?.opacity !== undefined && `opacity=${decimal(style.opacity)}`, dash && `dash pattern=${dash}`, style?.arrow ?? (node.kind === 'connector' ? '->' : undefined), !node.visible && 'opacity=0']
+  if (!isIdentity(node.transform)) {
+    const geometry = node.geometry
+    const center = geometry?.x !== undefined && geometry.y !== undefined
+      ? { x: geometry.x + (geometry.width ?? 0) / 2, y: geometry.y + (geometry.height ?? 0) / 2 }
+      : geometry?.points?.length
+        ? { x: (Math.min(...geometry.points.map((point) => point.x)) + Math.max(...geometry.points.map((point) => point.x))) / 2, y: (Math.min(...geometry.points.map((point) => point.y)) + Math.max(...geometry.points.map((point) => point.y))) / 2 }
+        : undefined
+    parts.push(center ? affineOption(node.transform, center) : transformOptions(node.transform))
+  }
   const values = parts.filter((value): value is string => Boolean(value))
   return values.length ? `[${values.join(',')}]` : ''
 }
-const coordinate = (point: ScenePoint) => `(${point.x},${point.y})`
+const coordinate = (point: ScenePoint) => `(${decimal(point.x)},${decimal(point.y)})`
 const generatedSource = (node: SceneNode): string | undefined => {
   const geometry = node.geometry
   if (!geometry) return undefined
   const options = inlineOptions(node)
-  if (node.kind === 'rect' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${geometry.x},${geometry.y}) rectangle (${geometry.x + geometry.width},${geometry.y + geometry.height});`
-  if (node.kind === 'ellipse' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${geometry.x},${geometry.y}) ellipse (${geometry.width / 2} and ${geometry.height / 2});`
+  if (['rect', 'roundrect'].includes(node.kind) && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x)},${decimal(geometry.y)}) rectangle (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height)});`
+  if (node.kind === 'ellipse' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height / 2)}) ellipse (${decimal(geometry.width / 2)} and ${decimal(geometry.height / 2)});`
+  if (node.kind === 'triangle' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y)}) -- cycle;`
+  if (node.kind === 'diamond' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height / 2)}) -- (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y + geometry.height / 2)}) -- cycle;`
+  const points = geometry.points
+  if (node.kind === 'connector' && points && points.length >= 2) {
+    const [start, end] = [points[0], points.at(-1)!]
+    if (node.bindings?.routing === 'elbow') return `\\draw${options} ${coordinate(start)} -| ${coordinate(end)};`
+    if (node.bindings?.routing === 'curved') return `\\draw${options} ${coordinate(start)} to[out=0,in=180] ${coordinate(end)};`
+  }
   if (['line', 'path', 'connector'].includes(node.kind) && geometry.points?.length) return `\\draw${options} ${geometry.points.map(coordinate).join(' -- ')};`
-  if ((node.kind === 'text' || node.kind === 'math') && geometry.x !== undefined && geometry.y !== undefined && node.text !== undefined) return `\\node${options} at (${geometry.x},${geometry.y}) {${node.text}};`
+  if ((node.kind === 'text' || node.kind === 'math') && geometry.x !== undefined && geometry.y !== undefined && node.text !== undefined) return `\\node${options} at (${decimal(geometry.x)},${decimal(geometry.y)}) {${node.text}};`
   if (node.kind === 'image' && geometry.x !== undefined && geometry.y !== undefined && node.image) {
-    const sizes = [node.image.width !== undefined && `width=${node.image.width}cm`, node.image.height !== undefined && `height=${node.image.height}cm`].filter(Boolean).join(',')
-    return `\\node${options} at (${geometry.x},${geometry.y}) {\\includegraphics${sizes ? `[${sizes}]` : ''}{${node.image.href}}};`
+    const sizes = [node.image.width !== undefined && `width=${decimal(node.image.width)}cm`, node.image.height !== undefined && `height=${decimal(node.image.height)}cm`].filter(Boolean).join(',')
+    return `\\node${options} at (${decimal(geometry.x + (geometry.width ?? node.image.width ?? 0) / 2)},${decimal(geometry.y + (geometry.height ?? node.image.height ?? 0) / 2)}) {\\includegraphics${sizes ? `[${sizes}]` : ''}{${node.image.href}}};`
   }
   return undefined
 }
@@ -204,13 +255,52 @@ const renderNode = (node: SceneNode): string => {
   return node.prefix + metaLine(node) + wrapped
 }
 
-export const serializeDocument = (document: SceneDocument): string => document.prefix + document.nodes.map(renderNode).join('') + document.suffix
+export const serializeDocument = (document: SceneDocument): string => {
+  const content = document.nodes.map(renderNode).join('')
+  return document.prefix + content + (content && !content.endsWith('\n') && !document.suffix.startsWith('\n') ? '\n' : '') + document.suffix
+}
 export const createDefaultDocument = (): SceneDocument => parseTikz(DEFAULT_TIKZ_SOURCE).document
 
 const findNode = (nodes: SceneNode[], id: string): SceneNode | undefined => {
   for (const node of nodes) { if (node.id === id) return node; const child = node.children && findNode(node.children, id); if (child) return child }
   return undefined
 }
+export const connectorAnchorPoint = (node: SceneNode, anchor: ConnectorAnchor): ScenePoint | undefined => {
+  const geometry = node.geometry
+  if (geometry?.x === undefined || geometry.y === undefined || geometry.width === undefined || geometry.height === undefined) return undefined
+  const left = geometry.x; const right = left + geometry.width; const bottom = geometry.y; const top = bottom + geometry.height
+  const x = anchor.includes('left') ? left : anchor.includes('right') ? right : (left + right) / 2
+  const y = anchor.includes('top') ? top : anchor.includes('bottom') ? bottom : (bottom + top) / 2
+  const centerX = (left + right) / 2; const centerY = (bottom + top) / 2
+  const scaledX = (x - centerX) * node.transform.xScale; const scaledY = (y - centerY) * node.transform.yScale
+  const angle = node.transform.rotate * Math.PI / 180; const cos = Math.cos(angle); const sin = Math.sin(angle)
+  return {
+    x: centerX + scaledX * cos - scaledY * sin + node.transform.translate.x,
+    y: centerY + scaledX * sin + scaledY * cos + node.transform.translate.y,
+  }
+}
+export const nearestConnectorAnchor = (node: SceneNode, point: ScenePoint): ConnectorBinding | undefined => {
+  let best: { anchor: ConnectorAnchor; distance: number } | undefined
+  for (const anchor of anchors) {
+    const candidate = connectorAnchorPoint(node, anchor)
+    if (!candidate) continue
+    const distance = (candidate.x - point.x) ** 2 + (candidate.y - point.y) ** 2
+    if (!best || distance < best.distance) best = { anchor, distance }
+  }
+  return best ? { nodeId: node.id, anchor: best.anchor } : undefined
+}
+const resolveConnectorBindings = (nodes: SceneNode[], roots = nodes): SceneNode[] => nodes.map((node) => {
+  const children = node.children ? resolveConnectorBindings(node.children, roots) : undefined
+  if (node.kind !== 'connector' || !node.geometry?.points?.length) return children ? { ...node, children } : node
+  const points = [...node.geometry.points]
+  const startNode = node.bindings?.start && findNode(roots, node.bindings.start.nodeId)
+  const endNode = node.bindings?.end && findNode(roots, node.bindings.end.nodeId)
+  const start = startNode && node.bindings?.start ? connectorAnchorPoint(startNode, node.bindings.start.anchor) : undefined
+  const end = endNode && node.bindings?.end ? connectorAnchorPoint(endNode, node.bindings.end.anchor) : undefined
+  if (start) points[0] = start
+  if (end) points[points.length - 1] = end
+  return { ...node, geometry: { ...node.geometry, points }, ...(children ? { children } : {}) }
+})
 const parentIdFor = (nodes: SceneNode[], id: string, parentId?: string): string | undefined => {
   for (const node of nodes) { if (node.id === id) return parentId; const found = node.children && parentIdFor(node.children, id, node.id); if (found !== undefined) return found }
   return undefined
@@ -264,17 +354,21 @@ export const applySceneTransaction = (document: SceneDocument, transaction: Scen
     }
     const target = findNode(nodes, operation.id)
     if (!target || target.kind === 'raw') return { ok: false, error: 'invalid_target' }
-    if (target.locked) return { ok: false, error: 'locked' }
+    if (target.locked && operation.type !== 'set_metadata') return { ok: false, error: 'locked' }
     if (operation.type === 'delete') { nodes = removeNode(nodes, operation.id); continue }
     nodes = updateNode(nodes, operation.id, (node) => {
-      if (operation.type === 'move') return { ...node, transform: { ...node.transform, translate: { x: node.transform.translate.x + operation.dx, y: node.transform.translate.y + operation.dy } } }
+      if (operation.type === 'move') {
+        if (node.geometry?.points) return { ...node, geometry: { ...node.geometry, points: node.geometry.points.map((point) => ({ x: point.x + operation.dx, y: point.y + operation.dy })) } }
+        if (node.geometry?.x !== undefined && node.geometry.y !== undefined) return { ...node, geometry: { ...node.geometry, x: node.geometry.x + operation.dx, y: node.geometry.y + operation.dy } }
+        return { ...node, transform: { ...node.transform, translate: { x: node.transform.translate.x + operation.dx, y: node.transform.translate.y + operation.dy } } }
+      }
       if (operation.type === 'transform') return { ...node, transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } }
       if (operation.type === 'set_metadata') return { ...node, ...(operation.name === undefined ? {} : { name: operation.name }), ...(operation.visible === undefined ? {} : { visible: operation.visible }), ...(operation.locked === undefined ? {} : { locked: operation.locked }) }
-      if (operation.type === 'update_properties') return { ...node, ...(operation.geometry ? { geometry: { ...node.geometry, ...operation.geometry } } : {}), ...(operation.style ? { style: { ...node.style, ...operation.style } } : {}), ...(operation.text === undefined ? {} : { text: operation.text }), ...(operation.image ? { image: { ...node.image, ...operation.image } as ImageProperties } : {}), ...(operation.transform ? { transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } } : {}) }
+      if (operation.type === 'update_properties') return { ...node, ...(operation.geometry ? { geometry: { ...node.geometry, ...operation.geometry } } : {}), ...(operation.style ? { style: { ...node.style, ...operation.style } } : {}), ...(operation.text === undefined ? {} : { text: operation.text }), ...(operation.image ? { image: { ...node.image, ...operation.image } as ImageProperties } : {}), ...(operation.bindings ? { bindings: operation.bindings } : {}), ...(operation.transform ? { transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } } : {}) }
       return { ...node, source: operation.source }
     })
   }
-  return { ok: true, document: { ...document, revision: document.revision + 1, nodes } }
+  return { ok: true, document: { ...document, revision: document.revision + 1, nodes: resolveConnectorBindings(nodes) } }
 }
 
 export const createHistory = (initial: SceneDocument, limit = 100): SceneHistory => ({ past: [], present: initial, future: [], limit })

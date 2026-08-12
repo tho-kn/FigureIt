@@ -6,9 +6,10 @@ FigureIt is a privacy-conscious desktop editor for TikZ figures. It combines dir
 
 ## What works
 
-- Native SVG artboard with direct object manipulation and numeric inspector controls
-- Rectangle, ellipse, line/path, text/math, image, and connector scene objects
-- Photoshop-style nested layer tree with grouping, visibility, locking, and ordering
+- Native SVG artboard with drag, resize, rotate, endpoint reshaping, and numeric inspector controls
+- Rectangle, rounded rectangle, ellipse, triangle, diamond, text/math, image, line, arrow, path, and connector objects
+- Shape-to-shape connectors with eight snap sites, persistent bindings, straight/elbow/curved routing, arrow ends, and solid/dashed/dotted strokes
+- Layer tree with grouping, visibility, reversible locking, ordering, duplication, opacity, stroke/fill, gradients, alignment, and distribution
 - Transactional undo/redo plus automatic local Git checkpoints per figure project
 - Split TikZ source editing with parse-before-apply behavior
 - SVG export and authoritative PDF compilation with Tectonic
@@ -28,7 +29,7 @@ Project history stays in the selected figure folder as a dedicated local Git rep
 
 ## Supported TikZ subset
 
-FigureIt currently recognizes generated `\draw` rectangles, ellipses, lines, arrow connectors and polyline paths; `\node` text/math; `\includegraphics` image nodes; and nested `scope` groups with translate/rotate/scale transforms. FigureIt metadata comments keep stable object IDs and editor-only state.
+FigureIt currently recognizes generated `\draw` rectangles, rounded rectangles, ellipses, triangles, diamonds, lines, arrow connectors, and polyline paths; `\node` text/math; `\includegraphics` image nodes; and nested `scope` groups with translate/rotate/scale transforms. Generated styling includes fill/stroke colours, opacity, linear gradients, line patterns, arrow ends, and connector routing. FigureIt metadata comments keep stable object IDs, bindings, and editor-only state.
 
 More complex TikZ remains visible in Source and is retained as raw content. It cannot be moved on the artboard until it is expressed using the supported subset.
 
@@ -36,7 +37,6 @@ More complex TikZ remains visible in Source and is retained as raw content. It c
 
 Requirements:
 
-- macOS on Apple silicon (current packaged target)
 - Node.js 24 and pnpm 10
 - Stable Rust and the platform prerequisites for Tauri 2
 - Optional: Claude Code installed and authenticated for Assistant
@@ -47,15 +47,30 @@ pnpm fetch:tectonic
 pnpm tauri dev
 ```
 
-`pnpm fetch:tectonic` downloads Tectonic 0.17.0 from its official GitHub release, verifies the pinned SHA-256 digest, and places the ignored sidecar where the release bundler expects it. The executable is not committed to this repository. Development builds use a system `tectonic` when available; create the macOS release bundle with `pnpm bundle` after fetching the sidecar.
+`pnpm fetch:tectonic` downloads Tectonic 0.17.0 from its official GitHub release, verifies the pinned SHA-256 digest, and places the ignored sidecar where the release bundler expects it. The executable is not committed. `pnpm bundle` selects the native sidecar and builds the platform package: a macOS app, Windows NSIS installer, or Linux deb/AppImage.
+
+Desktop packaging targets macOS arm64/x64, Windows x64, and Linux x64. Install the normal [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/) first; Linux also needs WebKitGTK 4.1 and the AppIndicator development packages. The CI matrix compiles, tests, and packages all three desktop operating systems.
+
+### Android
+
+Android currently provides the manual SVG/source editor with local browser-backed persistence. PDF/Tectonic, Git history, project assets, and Claude are desktop-only and are visibly disabled instead of silently failing on mobile.
+
+After installing Android Studio, SDK, NDK, and an arm64 Rust target:
+
+```sh
+pnpm tauri android init
+pnpm tauri android dev
+# or build an APK
+pnpm tauri android build --debug --apk --target aarch64
+```
 
 Run the checks with:
 
 ```sh
 pnpm check
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
+pnpm cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+pnpm cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+pnpm cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Project layout
