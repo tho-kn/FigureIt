@@ -92,9 +92,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: pnpm install --frozen-lockfile
       - run: pnpm fetch:tectonic
-      - run: pnpm bundle
+      - id: bundle
+        continue-on-error: ${{ runner.os == 'Windows' }}
+        run: pnpm bundle
         env:
           FIGUREIT_VERSION: ${{ needs.prepare.outputs.version }}
+      - name: Recover the Windows NSIS helper download
+        if: runner.os == 'Windows' && steps.bundle.outcome == 'failure'
+        shell: pwsh
+        env:
+          FIGUREIT_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $dll = Join-Path $env:LOCALAPPDATA 'tauri\NSIS\Plugins\x86-unicode\additional\nsis_tauri_utils.dll'
+          New-Item -ItemType Directory -Force (Split-Path $dll) | Out-Null
+          curl.exe --fail --location --retry 5 --retry-all-errors --output $dll https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll
+          if ((Get-FileHash $dll -Algorithm SHA1).Hash -ne '75197FEE3C6A814FE035788D1C34EAD39349B860') { throw 'NSIS helper checksum mismatch.' }
+          pnpm bundle
       - run: node scripts/collect-release.mjs "${{ matrix.target }}" "${{ needs.prepare.outputs.version }}"
       - uses: actions/upload-artifact@v7
         with:
