@@ -1,19 +1,20 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
   anchors,
   applySceneTransaction,
+  commitHistory,
   connectorAnchorPoint,
   createHistory,
   flattenRenderableNodes,
   nearestConnectorAnchor,
   parseTikz,
   PX_PER_CM,
+  redoHistory,
   sceneToClaudeContext,
   serializeDocument,
-  type ConnectorBinding,
+  undoHistory,
   type SceneDocument,
-  type SceneGeometry,
   type SceneHistory,
   type SceneNode,
   type SceneOperation,
@@ -25,6 +26,8 @@ import {
 import {
   askClaude,
   checkpointProject,
+  claudeLogin,
+  claudeStatus,
   compileProject,
   createProject,
   desktopFeaturesAvailable,
@@ -34,202 +37,70 @@ import {
   restoreCommit,
   saveProject,
   writeAsset,
+  type ClaudeStatus,
   type Commit,
 } from "./services/backend";
+import {
+  canvasPoint,
+  computeNodeBounds,
+  computePathD,
+  editorNumber,
+  previewDrag,
+  type Drag,
+  type DragPreview,
+  type SmartGuide,
+} from "./editor/interaction";
+import { EditorToolbar } from "./components/EditorToolbar";
+import { InspectorPanel } from "./components/InspectorPanel";
+import { LayersPanel } from "./components/LayersPanel";
+import { ToolOptions } from "./components/ToolOptions";
+import { LINE_KINDS, SHAPE_KINDS, TEXT_KINDS, toolNames, type Tool } from "./components/toolDomain";
 import "./App.css";
-
-type Tool = "select" | "rect" | "roundrect" | "ellipse" | "triangle" | "diamond" | "text" | "line" | "arrow" | "connector" | "path" | "image";
-type Tab = "source" | "history" | "assistant";
-type CanvasPoint = { x: number; y: number };
-type Drag = {
-  id: string;
-  pointerId: number;
-  start: CanvasPoint;
-  mode: "move" | "resize" | "rotate" | "point" | "connect" | "marquee" | "pan";
-  width?: number;
-  height?: number;
-  originX?: number;
-  originY?: number;
-  handle?: number;
-  rotation?: number;
-  center?: CanvasPoint;
-  points?: ScenePoint[];
-  pointIndex?: number;
-  fromId?: string;
-};
-type DragPreview = {
-  id: string;
-  mode: Drag["mode"];
-  dx: number;
-  dy: number;
-  geometry?: Partial<SceneGeometry>;
-  rotation?: number;
-  marquee?: { start: CanvasPoint; current: CanvasPoint };
-  snappedAnchor?: { node: SceneNode; binding: ConnectorBinding; point: ScenePoint };
-};
-type SmartGuide = { orientation: "h" | "v"; coord: number; start: number; end: number };
-
-const paletteColors = [
-  "#ffffff", "#f1f5f9", "#cbd5e1", "#64748b", "#1e293b",
-  "#2b4c7e", "#3b82f6", "#0ea5e9", "#06b6d4", "#10b981",
-  "#84cc16", "#eab308", "#f97316", "#ef4444", "#ec4899", "#8b5cf6"
-];
 
 const blank = String.raw`\begin{tikzpicture}
 \end{tikzpicture}`;
 
 
-const ToolIcon = ({ kind, size = 16 }: { kind: Tool; size?: number }) => {
-  switch (kind) {
-    case "select":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 4l7 17 2.5-6.5L20 12 4 4z" />
-        </svg>
-      );
-    case "rect":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="4" width="18" height="16" rx="2" />
-        </svg>
-      );
-    case "roundrect":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="4" width="18" height="16" rx="6" />
-        </svg>
-      );
-    case "ellipse":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <ellipse cx="12" cy="12" rx="9" ry="7" />
-        </svg>
-      );
-    case "triangle":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <polygon points="12 3 22 20 2 20" />
-        </svg>
-      );
-    case "diamond":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <polygon points="12 2 22 12 12 22 2 12" />
-        </svg>
-      );
-    case "text":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="4 7 4 4 20 4 20 7" />
-          <line x1="12" y1="4" x2="12" y2="20" />
-          <line x1="8" y1="20" x2="16" y2="20" />
-        </svg>
-      );
-    case "line":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="4" y1="20" x2="20" y2="4" />
-          <circle cx="4" cy="20" r="2.5" fill="currentColor" />
-          <circle cx="20" cy="4" r="2.5" fill="currentColor" />
-        </svg>
-      );
-    case "arrow":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="5" y1="19" x2="19" y2="5" />
-          <polyline points="9 5 19 5 19 15" />
-        </svg>
-      );
-    case "connector":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="4" cy="5" r="2" fill="currentColor" />
-          <path d="M4 5h8a4 4 0 0 1 4 4v10" />
-          <polyline points="12 15 16 19 20 15" />
-        </svg>
-      );
-    case "path":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 19l7-7 3 3-7 7-3-3z" />
-          <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-          <circle cx="11" cy="11" r="1.5" fill="currentColor" />
-        </svg>
-      );
-    case "image":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="3" />
-          <circle cx="8.5" cy="8.5" r="2" fill="currentColor" />
-          <polyline points="21 15 16 10 5 21" />
-        </svg>
-      );
-  }
+const shortcutKeyToTool: Record<string, Tool> = {
+  v: "select", r: "rect", u: "roundrect", o: "ellipse", g: "triangle", d: "diamond",
+  t: "text", l: "line", a: "arrow", c: "connector", p: "path", i: "image", m: "dimension",
 };
 
-const labels: Array<[Tool, string]> = [
-  ["select", "Select"],
-  ["rect", "Rectangle"],
-  ["roundrect", "Rounded rectangle"],
-  ["ellipse", "Ellipse"],
-  ["triangle", "Triangle"],
-  ["diamond", "Diamond"],
-  ["text", "Text / math"],
-  ["line", "Line"],
-  ["arrow", "Arrow"],
-  ["connector", "Connector"],
-  ["path", "Pen path"],
-  ["image", "Place image"],
-];
+type PanelId = "layers" | "inspector" | "history" | "source" | "assistant";
+type DockId = "left" | "right" | "bottom";
+type PanelSlot = { dock: DockId; visible: boolean; collapsed: boolean };
+
+const defaultPanels: Record<PanelId, PanelSlot> = {
+  layers: { dock: "left", visible: true, collapsed: false },
+  inspector: { dock: "right", visible: true, collapsed: false },
+  history: { dock: "bottom", visible: true, collapsed: false },
+  source: { dock: "bottom", visible: true, collapsed: false },
+  assistant: { dock: "bottom", visible: true, collapsed: false },
+};
+
+const panelTitles: Record<PanelId, string> = {
+  layers: "Layers",
+  inspector: "Inspector",
+  history: "History",
+  source: "Source",
+  assistant: "Assistant",
+};
+
+const panelOrder: PanelId[] = ["layers", "inspector", "history", "source", "assistant"];
+
+type ToolDefaults = {
+  shape: { fill: string; stroke: string; strokeWidth: number };
+  text: SceneTextStyle;
+  line: { stroke: string; strokeWidth: number; dash: string; arrow: string };
+};
+
+const defaultToolDefaults: ToolDefaults = {
+  shape: { fill: "#90baff", stroke: "black", strokeWidth: 0.05 },
+  text: { fontFamily: "sans", fontSize: 14 },
+  line: { stroke: "black", strokeWidth: 0.06, dash: "", arrow: "->" },
+};
 
 const identity = { translate: { x: 0, y: 0 }, rotate: 0, xScale: 1, yScale: 1 };
-const toolNames: Partial<Record<Tool, string>> = {
-  rect: "Rectangle",
-  roundrect: "Rounded rectangle",
-  ellipse: "Ellipse",
-  triangle: "Triangle",
-  diamond: "Diamond",
-  text: "Text",
-  line: "Line",
-  arrow: "Arrow",
-  connector: "Connector",
-  path: "Path",
-  image: "Image",
-};
-
-const KindIcon = ({ kind, size = 13 }: { kind: string; size?: number }) => {
-  switch (kind) {
-    case "rect":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="1"/></svg>;
-    case "roundrect":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="16" rx="5"/></svg>;
-    case "ellipse":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>;
-    case "triangle":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 3 21 20 3 20"/></svg>;
-    case "diamond":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 22 12 12 22 2 12"/></svg>;
-    case "text":
-    case "math":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="9" y1="20" x2="15" y2="20"/></svg>;
-    case "line":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor"/><circle cx="20" cy="4" r="2" fill="currentColor"/></svg>;
-    case "arrow":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>;
-    case "connector":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h8a4 4 0 0 1 4 4v8"/><polyline points="12 15 16 19 20 15"/></svg>;
-    case "path":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>;
-    case "image":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/></svg>;
-    case "group":
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M3 7l4-4h6l2 4"/></svg>;
-    case "raw":
-    default:
-      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>;
-  }
-};
-
 const canvasPresets = [
   { label: "Standard (800 × 520)", width: 800, height: 520 },
   { label: "Slide 16:9 (960 × 540)", width: 960, height: 540 },
@@ -238,56 +109,6 @@ const canvasPresets = [
   { label: "Square (600 × 600)", width: 600, height: 600 },
   { label: "Wide Banner (960 × 380)", width: 960, height: 380 },
 ];
-
-
-
-const computePathD = (rawPoints: ScenePoint[], routing: string | undefined, canvasHeight: number): string => {
-  if (rawPoints.length < 2) return "";
-  const pts = rawPoints.map((p) => ({
-    x: p.x * PX_PER_CM,
-    y: canvasHeight - p.y * PX_PER_CM,
-  }));
-
-  if (routing === "curved") {
-    if (pts.length === 2) {
-      const p0 = pts[0];
-      const p1 = pts[1];
-      const midX = (p0.x + p1.x) / 2;
-      return `M ${p0.x} ${p0.y} C ${midX} ${p0.y}, ${midX} ${p1.y}, ${p1.x} ${p1.y}`;
-    }
-    if (pts.length === 3) {
-      return `M ${pts[0].x} ${pts[0].y} Q ${pts[1].x} ${pts[1].y} ${pts[2].x} ${pts[2].y}`;
-    }
-    if (pts.length === 4) {
-      return `M ${pts[0].x} ${pts[0].y} C ${pts[1].x} ${pts[1].y}, ${pts[2].x} ${pts[2].y}, ${pts[3].x} ${pts[3].y}`;
-    }
-    let d = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(0, i - 1)];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[Math.min(pts.length - 1, i + 2)];
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
-    }
-    return d;
-  }
-
-  if (routing === "elbow") {
-    if (pts.length === 2) {
-      const p0 = pts[0];
-      const p1 = pts[1];
-      const midX = (p0.x + p1.x) / 2;
-      return `M ${p0.x} ${p0.y} L ${midX} ${p0.y} L ${midX} ${p1.y} L ${p1.x} ${p1.y}`;
-    }
-    return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ");
-  }
-
-  return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ");
-};
 
 const renderRichText = (
   text: string | undefined,
@@ -362,7 +183,7 @@ const promptChips = [
   { label: "✨ Minimal Modern Dark", text: "Style this diagram with modern dark mode aesthetics: charcoal fills (#20242c), electric blue accents (#4285f4), and crisp white text." },
 ];
 
-const shapeNode = (kind: Exclude<Tool, "select" | "connector">, index: number): SceneNode => {
+const shapeNode = (kind: Exclude<Tool, "select" | "connector">, index: number, defaults: ToolDefaults): SceneNode => {
   const x = 1.5 + index * 0.45;
   const y = 1.5 + index * 0.35;
   const name = `${toolNames[kind] ?? kind}${index ? ` ${index + 1}` : ""}`;
@@ -377,14 +198,14 @@ const shapeNode = (kind: Exclude<Tool, "select" | "connector">, index: number): 
     prefix: "\n",
     source: "",
   };
-  if (["rect", "roundrect", "ellipse", "triangle", "diamond"].includes(kind))
+  if (SHAPE_KINDS.includes(kind))
     return {
       ...base,
       geometry: { x, y, width: 3.5, height: 2.2 },
       style: {
-        fill: "#90baff",
-        stroke: "black",
-        strokeWidth: 0.05,
+        fill: defaults.shape.fill,
+        stroke: defaults.shape.stroke,
+        strokeWidth: defaults.shape.strokeWidth,
         opacity: 1,
       },
     };
@@ -397,19 +218,68 @@ const shapeNode = (kind: Exclude<Tool, "select" | "connector">, index: number): 
           { x: x + 3.5, y: y + 1.5 },
         ],
       },
-      style: { stroke: "black", strokeWidth: 0.06, ...(kind === "arrow" ? { arrow: "->" } : {}) },
+      style: {
+        stroke: defaults.line.stroke,
+        strokeWidth: defaults.line.strokeWidth,
+        ...(defaults.line.dash ? { dash: defaults.line.dash } : {}),
+        ...(kind === "arrow" ? { arrow: defaults.line.arrow } : {}),
+      },
+    };
+  if (kind === "dimension")
+    return {
+      ...base,
+      geometry: {
+        points: [
+          { x, y },
+          { x: x + 3.5, y },
+        ],
+      },
+      text: "3.5 cm",
+      style: { stroke: defaults.line.stroke, strokeWidth: 0.03, textStyle: { fontSize: 10 } },
     };
   if (kind === "text")
     return {
       ...base,
       geometry: { x, y },
       text: "Text / α²",
-      style: { stroke: "black" },
+      style: { stroke: "black", textStyle: { ...defaults.text } },
     };
   return { ...base, geometry: { x, y }, image: { href: "image-placeholder" } };
 };
 
 const id = z.string().min(1).max(160);
+const insertNodeSchema = z.object({
+  id,
+  kind: z.enum(["rect", "roundrect", "ellipse", "triangle", "diamond", "line", "path", "text", "math"]),
+  name: z.string().max(160).optional(),
+  visible: z.boolean().optional(),
+  locked: z.boolean().optional(),
+  geometry: z.object({
+    x: z.number().finite().optional(),
+    y: z.number().finite().optional(),
+    width: z.number().finite().positive().optional(),
+    height: z.number().finite().positive().optional(),
+    points: z.array(z.object({ x: z.number().finite(), y: z.number().finite() })).min(2).optional(),
+  }).strict(),
+  style: z.object({
+    fill: z.string().max(80).optional(),
+    stroke: z.string().max(80).optional(),
+    strokeWidth: z.number().finite().optional(),
+    opacity: z.number().min(0).max(1).optional(),
+  }).strict().optional(),
+  text: z.string().max(10000).optional(),
+}).strict().superRefine((node, ctx) => {
+  const g = node.geometry;
+  const shape = ["rect", "roundrect", "ellipse", "triangle", "diamond"].includes(node.kind);
+  const lined = node.kind === "line" || node.kind === "path";
+  const texted = node.kind === "text" || node.kind === "math";
+  if (shape && (g.x === undefined || g.y === undefined || g.width === undefined || g.height === undefined))
+    ctx.addIssue({ code: "custom", message: "shape nodes need x, y, width, and height" });
+  if (lined && (!g.points || g.points.length < 2))
+    ctx.addIssue({ code: "custom", message: "line and path nodes need at least two points" });
+  if (texted && (g.x === undefined || g.y === undefined))
+    ctx.addIssue({ code: "custom", message: "text nodes need x and y" });
+});
 const operationsSchema = z.array(
   z.discriminatedUnion("type", [
     z.object({ type: z.literal("move"), id, dx: z.number().finite(), dy: z.number().finite() }).strict(),
@@ -465,209 +335,39 @@ const operationsSchema = z.array(
       name: z.string().max(160).optional(),
     }).strict(),
     z.object({ type: z.literal("ungroup"), id }).strict(),
+    z.object({
+      type: z.literal("insert"),
+      parentId: id.optional(),
+      node: insertNodeSchema,
+    }).strict(),
   ]),
 );
 
 const validOperations = (value: unknown): value is SceneOperation[] =>
   operationsSchema.safeParse(value).success;
-const editorNumber = (value: number, digits = 3) => Number(value.toFixed(digits));
 
-const canvasPoint = (canvas: SVGSVGElement, clientX: number, clientY: number, canvasWidth = 800, canvasHeight = 520): CanvasPoint => {
-  const matrix = canvas.getScreenCTM?.();
-  if (matrix && canvas.createSVGPoint) {
-    const point = canvas.createSVGPoint();
-    point.x = clientX;
-    point.y = clientY;
-    return point.matrixTransform(matrix.inverse());
-  }
-  const bounds = canvas.getBoundingClientRect();
-  return bounds.width && bounds.height
-    ? { x: (clientX - bounds.left) * canvasWidth / bounds.width, y: (clientY - bounds.top) * canvasHeight / bounds.height }
-    : { x: clientX, y: clientY };
-};
-
-const computeNodeBounds = (node: SceneNode): { minX: number; maxX: number; minY: number; maxY: number; centerX: number; centerY: number } | undefined => {
-  if (node.geometry?.x !== undefined && node.geometry.y !== undefined && node.geometry.width !== undefined && node.geometry.height !== undefined) {
-    const x = node.geometry.x + node.transform.translate.x;
-    const y = node.geometry.y + node.transform.translate.y;
-    const w = node.geometry.width;
-    const h = node.geometry.height;
-    return { minX: x, maxX: x + w, minY: y, maxY: y + h, centerX: x + w / 2, centerY: y + h / 2 };
-  }
-  if (node.geometry?.points?.length) {
-    const xs = node.geometry.points.map((p) => p.x + node.transform.translate.x);
-    const ys = node.geometry.points.map((p) => p.y + node.transform.translate.y);
-    const minX = Math.min(...xs); const maxX = Math.max(...xs);
-    const minY = Math.min(...ys); const maxY = Math.max(...ys);
-    return { minX, maxX, minY, maxY, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2 };
-  }
-  if (node.geometry?.x !== undefined && node.geometry.y !== undefined) {
-    const x = node.geometry.x + node.transform.translate.x;
-    const y = node.geometry.y + node.transform.translate.y;
-    return { minX: x, maxX: x + 1, minY: y, maxY: y + 0.5, centerX: x + 0.5, centerY: y + 0.25 };
-  }
-  return undefined;
-};
-
-const previewDrag = (drag: Drag, point: CanvasPoint, nodes: SceneNode[] = [], snapEnabled = true, canvasWidth = 800, canvasHeight = 520): { preview: DragPreview; guides: SmartGuide[] } => {
-  let dx = (point.x - drag.start.x) / PX_PER_CM;
-  let dy = -(point.y - drag.start.y) / PX_PER_CM;
-  const guides: SmartGuide[] = [];
-
-  if (drag.mode === "marquee") {
+const normalizeClaudeOperations = (operations: SceneOperation[]): SceneOperation[] =>
+  operations.map((operation) => {
+    if (operation.type !== "insert") return operation;
+    const node = operation.node;
+    const isLine = node.kind === "line" || node.kind === "path";
     return {
-      preview: { id: drag.id, mode: drag.mode, dx: 0, dy: 0, marquee: { start: drag.start, current: point } },
-      guides: [],
-    };
-  }
-
-  if ((drag.mode === "point" || drag.mode === "connect") && drag.points?.length) {
-    const rawPos = { x: point.x / PX_PER_CM, y: (canvasHeight - point.y) / PX_PER_CM };
-    let snapPos = rawPos;
-    let snappedAnchor: { node: SceneNode; binding: ConnectorBinding; point: ScenePoint } | undefined;
-
-    const snapRadius = 0.5; // snap threshold in cm (~19px)
-    let bestDist = snapRadius;
-    for (const n of nodes) {
-      if (n.id === drag.id || (drag.fromId && n.id === drag.fromId) || !n.visible || n.locked || ["line", "path", "connector", "raw"].includes(n.kind)) continue;
-      for (const anchor of anchors) {
-        const ap = connectorAnchorPoint(n, anchor);
-        if (!ap) continue;
-        const dist = Math.hypot(ap.x - rawPos.x, ap.y - rawPos.y);
-        if (dist < bestDist) {
-          bestDist = dist;
-          snapPos = ap;
-          snappedAnchor = { node: n, binding: { nodeId: n.id, anchor }, point: ap };
-        }
-      }
-    }
-
-    const points = [...drag.points];
-    points[drag.pointIndex ?? points.length - 1] = snapPos;
-    return { preview: { id: drag.id, mode: drag.mode, dx, dy, geometry: { points }, snappedAnchor }, guides: [] };
-  }
-
-  if (drag.mode === "resize" && drag.width !== undefined && drag.height !== undefined) {
-    const radians = ((drag.rotation ?? 0) * Math.PI) / 180;
-    const localDx = dx * Math.cos(radians) + dy * Math.sin(radians);
-    const localDy = -dx * Math.sin(radians) + dy * Math.cos(radians);
-    const west = drag.handle === 0 || drag.handle === 6 || drag.handle === 7;
-    const east = drag.handle === 2 || drag.handle === 3 || drag.handle === 4;
-    const north = drag.handle === 0 || drag.handle === 1 || drag.handle === 2;
-    const south = drag.handle === 4 || drag.handle === 5 || drag.handle === 6;
-    let width = Math.max(0.2, drag.width + (east ? localDx : west ? -localDx : 0));
-    let height = Math.max(0.2, drag.height + (north ? localDy : south ? -localDy : 0));
-
-    if (snapEnabled) {
-      const snapThreshold = 6 / PX_PER_CM;
-      const otherNodes = nodes.filter((n) => n.id !== drag.id && n.visible && !n.locked && n.geometry?.width !== undefined && n.geometry?.height !== undefined);
-      for (const other of otherNodes) {
-        if (Math.abs(width - other.geometry!.width!) < snapThreshold) {
-          width = other.geometry!.width!;
-        }
-        if (Math.abs(height - other.geometry!.height!) < snapThreshold) {
-          height = other.geometry!.height!;
-        }
-      }
-    }
-
-    return {
-      preview: {
-        id: drag.id,
-        mode: drag.mode,
-        dx,
-        dy,
-        geometry: {
-          width,
-          height,
-          ...(west ? { x: (drag.originX ?? 0) + drag.width - width } : {}),
-          ...(south ? { y: (drag.originY ?? 0) + drag.height - height } : {}),
-        },
+      ...operation,
+      node: {
+        id: node.id,
+        kind: node.kind,
+        name: node.name,
+        visible: node.visible ?? true,
+        locked: node.locked ?? false,
+        transform: identity,
+        geometry: node.geometry,
+        style: node.style ?? (isLine ? { stroke: "black", strokeWidth: 0.06 } : { fill: "#90baff", stroke: "black", strokeWidth: 0.05 }),
+        text: node.text,
+        prefix: "\n",
+        source: "",
       },
-      guides: [],
     };
-  }
-
-  if (drag.mode === "rotate" && drag.rotation !== undefined && drag.center) {
-    const start = Math.atan2(drag.start.y - drag.center.y, drag.start.x - drag.center.x);
-    const current = Math.atan2(point.y - drag.center.y, point.x - drag.center.x);
-    let rawAngle = (drag.rotation - ((current - start) * 180) / Math.PI) % 360;
-    if (rawAngle < 0) rawAngle += 360;
-    if (snapEnabled) {
-      const snapSteps = [0, 45, 90, 135, 180, 225, 270, 315, 360];
-      for (const targetAngle of snapSteps) {
-        if (Math.abs(rawAngle - targetAngle) <= 6) {
-          rawAngle = targetAngle === 360 ? 0 : targetAngle;
-          break;
-        }
-      }
-    }
-    return { preview: { id: drag.id, mode: drag.mode, dx, dy, rotation: editorNumber(rawAngle, 1) }, guides: [] };
-  }
-
-  if (drag.mode === "move" && snapEnabled) {
-    const activeNode = nodes.find((n) => n.id === drag.id);
-    const bounds = activeNode ? computeNodeBounds(activeNode) : undefined;
-    if (bounds) {
-      const snapThreshold = 6 / PX_PER_CM;
-      const targetMinX = bounds.minX + dx;
-      const targetCenterX = bounds.centerX + dx;
-      const targetMaxX = bounds.maxX + dx;
-      const targetMinY = bounds.minY + dy;
-      const targetCenterY = bounds.centerY + dy;
-      const targetMaxY = bounds.maxY + dy;
-
-      const otherNodes = nodes.filter((n) => n.id !== drag.id && n.visible && !n.locked);
-      const xCandidates: Array<{ pos: number; type: string }> = [
-        { pos: 0, type: "canvas" },
-        { pos: canvasWidth / PX_PER_CM / 2, type: "canvas-center" },
-        { pos: canvasWidth / PX_PER_CM, type: "canvas" },
-      ];
-      const yCandidates: Array<{ pos: number; type: string }> = [
-        { pos: 0, type: "canvas" },
-        { pos: canvasHeight / PX_PER_CM / 2, type: "canvas-center" },
-        { pos: canvasHeight / PX_PER_CM, type: "canvas" },
-      ];
-
-      for (const other of otherNodes) {
-        const b = computeNodeBounds(other);
-        if (!b) continue;
-        xCandidates.push({ pos: b.minX, type: "node" }, { pos: b.centerX, type: "node" }, { pos: b.maxX, type: "node" });
-        yCandidates.push({ pos: b.minY, type: "node" }, { pos: b.centerY, type: "node" }, { pos: b.maxY, type: "node" });
-      }
-
-      let bestSnapX: { diff: number; targetCoord: number } | null = null;
-      for (const cand of xCandidates) {
-        for (const testPos of [targetMinX, targetCenterX, targetMaxX]) {
-          const diff = cand.pos - testPos;
-          if (Math.abs(diff) < snapThreshold && (!bestSnapX || Math.abs(diff) < Math.abs(bestSnapX.diff))) {
-            bestSnapX = { diff, targetCoord: cand.pos };
-          }
-        }
-      }
-      if (bestSnapX) {
-        dx += bestSnapX.diff;
-        guides.push({ orientation: "v", coord: bestSnapX.targetCoord * PX_PER_CM, start: 0, end: canvasHeight });
-      }
-
-      let bestSnapY: { diff: number; targetCoord: number } | null = null;
-      for (const cand of yCandidates) {
-        for (const testPos of [targetMinY, targetCenterY, targetMaxY]) {
-          const diff = cand.pos - testPos;
-          if (Math.abs(diff) < snapThreshold && (!bestSnapY || Math.abs(diff) < Math.abs(bestSnapY.diff))) {
-            bestSnapY = { diff, targetCoord: cand.pos };
-          }
-        }
-      }
-      if (bestSnapY) {
-        dy += bestSnapY.diff;
-        guides.push({ orientation: "h", coord: canvasHeight - bestSnapY.targetCoord * PX_PER_CM, start: 0, end: canvasWidth });
-      }
-    }
-  }
-
-  return { preview: { id: drag.id, mode: drag.mode, dx, dy }, guides };
-};
+  });
 
 function SourceTab({
   doc,
@@ -739,9 +439,36 @@ function AssistantTab({
   const [isConsulting, setIsConsulting] = useState(false);
   const [scopeToSelection, setScopeToSelection] = useState(false);
   const [chatLog, setChatLog] = useState<Array<{ role: "user" | "assistant"; text: string; time: string }>>([]);
+  const [claudeState, setClaudeState] = useState<ClaudeStatus | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  useEffect(() => {
+    void claudeStatus().then(setClaudeState);
+  }, []);
+
+  const refreshStatus = () => {
+    setClaudeState(null);
+    void claudeStatus().then(setClaudeState);
+  };
+
+  const startLogin = async () => {
+    setLoggingIn(true);
+    try {
+      const started = await claudeLogin();
+      onNotice(started
+        ? "Claude login opened in your browser. Sign in, then click Re-check."
+        : "Could not start Claude login — is Claude Code installed?");
+    } catch {
+      onNotice("Could not start Claude login");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const assistantBlocked = claudeState !== null && claudeState.status !== "ready";
 
   const sendRequest = (promptText = request) => {
-    if (!promptText.trim() || isConsulting) return;
+    if (!promptText.trim() || isConsulting || assistantBlocked) return;
     const scopedDoc = scopeToSelection && selected.length ? { ...doc, nodes: doc.nodes.filter((n) => selected.includes(n.id)) } : doc;
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatLog((old) => [...old, { role: "user", text: promptText, time }]);
@@ -755,7 +482,7 @@ function AssistantTab({
         if (result.status === "ok" && validOperations(result.operations)) {
           setSuggestion({
             text: result.text,
-            operations: result.operations,
+            operations: normalizeClaudeOperations(result.operations as SceneOperation[]),
           });
           setChatLog((old) => [...old, { role: "assistant", text: result.text, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
           onNotice("Suggestion ready for review");
@@ -773,13 +500,28 @@ function AssistantTab({
 
   return (
     <div className="assistant-panel">
+      {claudeState && claudeState.status !== "ready" && (
+        <div className={claudeState.status === "not_logged_in" ? "assistant-status warn" : "assistant-status"}>
+          {claudeState.status === "not_logged_in" ? (
+            <>
+              <span>Claude Code isn't logged in. Sign in to use the design assistant.</span>
+              <button onClick={startLogin} disabled={loggingIn}>
+                {loggingIn ? "Opening browser..." : "Log in to Claude"}
+              </button>
+            </>
+          ) : (
+            <span>Claude Code isn't installed on this machine.</span>
+          )}
+          <button onClick={refreshStatus}>Re-check</button>
+        </div>
+      )}
       <div className="assistant-main">
         <div className="assistant-chips">
           {promptChips.map((chip, i) => (
             <button
               key={i}
               className="chip"
-              disabled={isConsulting}
+              disabled={isConsulting || assistantBlocked}
               onClick={() => {
                 setRequest(chip.text);
                 sendRequest(chip.text);
@@ -792,15 +534,17 @@ function AssistantTab({
         <div className="assistant-request-wrap">
           <textarea
             aria-label="Assistant request"
-            placeholder="Ask Claude to modify, align, re-theme, or add elements..."
+            placeholder={assistantBlocked
+              ? "Log in to Claude Code to use the design assistant."
+              : "Ask Claude to modify, align, re-theme, or add elements..."}
             value={request}
-            disabled={isConsulting}
+            disabled={isConsulting || assistantBlocked}
             onChange={(event) => setRequest(event.target.value)}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendRequest();
             }}
           />
-          <button disabled={isConsulting || !request.trim()} onClick={() => sendRequest()}>
+          <button disabled={isConsulting || assistantBlocked || !request.trim()} onClick={() => sendRequest()}>
             {isConsulting ? "Thinking..." : "Request suggestion"}
           </button>
         </div>
@@ -808,6 +552,13 @@ function AssistantTab({
           <input type="checkbox" checked={scopeToSelection} onChange={(e) => setScopeToSelection(e.target.checked)} />
           Scope prompt to selected elements only ({selected.length} selected)
         </label>
+        <div className={claudeState?.status === "ready" ? "assistant-status-line ok" : "assistant-status-line"}>
+          {claudeState === null
+            ? "Checking Claude Code..."
+            : claudeState.status === "ready"
+              ? "● Claude Code connected"
+              : "● Claude Code unavailable"}
+        </div>
       </div>
       <div className="assistant-sidebar">
         {isConsulting ? (
@@ -837,14 +588,23 @@ function AssistantTab({
   );
 }
 
+
 function App() {
   const desktop = desktopFeaturesAvailable();
   const [doc, setDoc] = useState<SceneDocument>(() => parseTikz(blank).document);
   const [history, setHistory] = useState<SceneHistory>(() => createHistory(parseTikz(blank).document));
-  const [project, setProject] = useState<{ handle: string; title: string } | null>(null);
+  const [project, setProject] = useState<{ handle?: string; title: string } | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [tool, setTool] = useState<Tool>("select");
-  const [tab, setTab] = useState<Tab>("source");
+  const [activeBottomTab, setActiveBottomTab] = useState<PanelId>("source");
+  const [panels, setPanels] = useState<Record<PanelId, PanelSlot>>(() => structuredClone(defaultPanels));
+  const [toolsVisible, setToolsVisible] = useState(true);
+  const [draggingPanel, setDraggingPanel] = useState<PanelId | null>(null);
+  const [dragOverDock, setDragOverDock] = useState<DockId | null>(null);
+  const [windowMenuOpen, setWindowMenuOpen] = useState(false);
+  const [shapeDefaults, setShapeDefaults] = useState(defaultToolDefaults.shape);
+  const [textDefaults, setTextDefaults] = useState(defaultToolDefaults.text);
+  const [lineDefaults, setLineDefaults] = useState(defaultToolDefaults.line);
   const [notice, setNotice] = useState("Ready");
   const [commits, setCommits] = useState<Commit[]>([]);
   const [suggestion, setSuggestion] = useState<{ text: string; operations: SceneOperation[] } | null>(null);
@@ -861,6 +621,8 @@ function App() {
   const [clipboard, setClipboard] = useState<SceneNode[]>([]);
   const [draftPoints, setDraftPoints] = useState<ScenePoint[]>([]);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 800, height: 520 });
+  const [pngDpi, setPngDpi] = useState(300);
+  const [fitWidthCm, setFitWidthCm] = useState(8.8);
 
   const svg = useRef<SVGSVGElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -934,13 +696,13 @@ function App() {
   const flushCheckpoint = () => {
     if (checkpoint.current) window.clearTimeout(checkpoint.current);
     checkpoint.current = undefined;
-    if (project) void checkpointProject(project.handle);
+    if (project?.handle) void checkpointProject(project.handle);
   };
 
   const persist = (next: SceneDocument) => {
     const source = serializeDocument(next);
     setDoc(next);
-    if (project) {
+    if (project?.handle) {
       void saveProject(project.handle, source);
       if (checkpoint.current) window.clearTimeout(checkpoint.current);
       checkpoint.current = window.setTimeout(flushCheckpoint, 500);
@@ -956,12 +718,7 @@ function App() {
       setNotice("That change is unavailable");
       return;
     }
-    setHistory((old) => ({
-      ...old,
-      past: [...old.past, old.present].slice(-old.limit),
-      present: result.document,
-      future: [],
-    }));
+    setHistory((old) => commitHistory(old, result.document));
     persist(result.document);
     setNotice(label);
   };
@@ -975,7 +732,7 @@ function App() {
         return;
       }
       await resetClaudeConversation();
-      setProject({ handle: `file-${Date.now()}`, title: file.name });
+      setProject({ title: file.name });
       setDoc(parsed.document);
       setHistory(createHistory(parsed.document));
       setSelected([]);
@@ -1020,38 +777,27 @@ function App() {
     const node = shapeNode(
       kind,
       nodes.filter((node) => node.kind !== "raw").length,
+      { shape: shapeDefaults, text: textDefaults, line: lineDefaults },
     );
     transact(`Add ${node.name}`, [{ type: "insert", node }]);
     setSelected([node.id]);
-    setTool("select");
+    setTool(kind);
   };
 
   const undo = () => {
-    const prior = history.past.at(-1);
-    if (!prior) return;
-    const next = {
-      ...history,
-      past: history.past.slice(0, -1),
-      present: prior,
-      future: [history.present, ...history.future],
-    };
+    const next = undoHistory(history);
+    if (next === history) return;
     setHistory(next);
-    persist(prior);
+    persist(next.present);
     setSelected([]);
     setNotice("Undo");
   };
 
   const redo = () => {
-    const nextDoc = history.future[0];
-    if (!nextDoc) return;
-    const next = {
-      ...history,
-      past: [...history.past, history.present].slice(-history.limit),
-      present: nextDoc,
-      future: history.future.slice(1),
-    };
+    const next = redoHistory(history);
+    if (next === history) return;
     setHistory(next);
-    persist(nextDoc);
+    persist(next.present);
     setSelected([]);
     setNotice("Redo");
   };
@@ -1295,164 +1041,6 @@ function App() {
     transact("Solo layer", ops);
   };
 
-  const layer = (
-    node: SceneNode,
-    depth = 0,
-    ancestorVisible = true,
-    ancestorLocked = false,
-  ): React.ReactNode => {
-    const isGroup = node.kind === "group";
-    const isCollapsed = collapsedGroups.has(node.id);
-    const matchesSearch = !layerSearch || (node.name ?? node.kind).toLowerCase().includes(layerSearch.toLowerCase()) || node.kind.toLowerCase().includes(layerSearch.toLowerCase());
-
-    return (
-      <Fragment key={node.id}>
-        {matchesSearch && (
-          <div
-            className={`layer ${selected.includes(node.id) ? "selected" : ""}`}
-            draggable={!node.locked}
-            onDragStart={(e) => {
-              e.dataTransfer.setData("text/plain", node.id);
-              e.dataTransfer.effectAllowed = "move";
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const draggedId = e.dataTransfer.getData("text/plain");
-              if (draggedId && draggedId !== node.id) {
-                const list = siblingsFor(doc.nodes, node.id);
-                const targetIdx = list?.findIndex((n) => n.id === node.id) ?? 0;
-                update({ type: "reorder", id: draggedId, index: targetIdx }, "Reorder layer");
-              }
-            }}
-            style={{
-              paddingLeft: 4 + depth * 14,
-              opacity: ancestorVisible && node.visible ? 1 : 0.45,
-            }}
-          >
-
-            <span className="layer-drag-handle" title="Drag to reorder">⠿</span>
-            {isGroup ? (
-              <button
-                className="layer-fold"
-                aria-label={isCollapsed ? "Expand group" : "Collapse group"}
-                onClick={() => {
-                  setCollapsedGroups((old) => {
-                    const next = new Set(old);
-                    if (next.has(node.id)) next.delete(node.id);
-                    else next.add(node.id);
-                    return next;
-                  });
-                }}
-              >
-                {isCollapsed ? "▸" : "▾"}
-              </button>
-            ) : (
-              <span className="layer-icon"><KindIcon kind={node.kind} size={12} /></span>
-            )}
-            {editingLayerNameId === node.id ? (
-              <input
-                className="layer-rename-input"
-                autoFocus
-                defaultValue={node.name ?? node.kind}
-                onBlur={(e) => {
-                  setEditingLayerNameId(null);
-                  if (e.target.value !== (node.name ?? node.kind))
-                    update({ type: "set_metadata", id: node.id, name: e.target.value }, "Rename layer");
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  if (e.key === "Escape") setEditingLayerNameId(null);
-                }}
-              />
-            ) : (
-              <button
-                className="layer-name"
-                onDoubleClick={() => setEditingLayerNameId(node.id)}
-                onClick={(event) =>
-                  setSelected((old) =>
-                    event.shiftKey
-                      ? old.includes(node.id)
-                        ? old.filter((id) => id !== node.id)
-                        : [...old, node.id]
-                      : [node.id],
-                  )
-                }
-              >
-                {node.name ?? node.kind}
-              </button>
-            )}
-            <button
-              aria-label={
-                node.visible
-                  ? `Hide ${node.name ?? node.kind}`
-                  : `Show ${node.name ?? node.kind}`
-              }
-              onClick={(e) => {
-                if (e.altKey) soloLayer(node.id);
-                else
-                  update({
-                    type: "set_metadata",
-                    id: node.id,
-                    visible: !node.visible,
-                  });
-              }}
-              title="Click to toggle, Alt+Click to solo"
-            >
-              {node.visible ? "◉" : "○"}
-            </button>
-            <button
-              aria-label={
-                node.locked || ancestorLocked
-                  ? `Unlock ${node.name ?? node.kind}`
-                  : `Lock ${node.name ?? node.kind}`
-              }
-              disabled={ancestorLocked}
-              onClick={() =>
-                update({ type: "set_metadata", id: node.id, locked: !node.locked })
-              }
-            >
-              {node.locked || ancestorLocked ? "🔒" : "🔓"}
-            </button>
-            <div className="layer-actions">
-              <button
-                aria-label={`Move ${node.name ?? node.kind} up`}
-                title="Move up"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const list = siblingsFor(doc.nodes, node.id);
-                  const idx = list?.findIndex((n) => n.id === node.id) ?? 0;
-                  if (idx > 0) update({ type: "reorder", id: node.id, index: idx - 1 }, "Move layer up");
-                }}
-              >
-                ▲
-              </button>
-              <button
-                aria-label={`Move ${node.name ?? node.kind} down`}
-                title="Move down"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const list = siblingsFor(doc.nodes, node.id);
-                  const idx = list?.findIndex((n) => n.id === node.id) ?? 0;
-                  if (list && idx < list.length - 1) update({ type: "reorder", id: node.id, index: idx + 1 }, "Move layer down");
-                }}
-              >
-                ▼
-              </button>
-            </div>
-          </div>
-
-        )}
-        {!isCollapsed && node.children?.map((child) => (
-          <Fragment key={child.id}>{layer(child, depth + 1, ancestorVisible && node.visible, ancestorLocked || node.locked)}</Fragment>
-        ))}
-      </Fragment>
-    );
-  };
-
   const exportSvg = () => {
     if (!svg.current) return;
     const blob = new Blob(
@@ -1468,8 +1056,81 @@ function App() {
     setNotice("SVG exported");
   };
 
+  const exportPng = () => {
+    if (!svg.current) return;
+    const vb = svg.current.viewBox.baseVal;
+    const width = vb.width || canvasSize.width;
+    const height = vb.height || canvasSize.height;
+    const scale = pngDpi / 96;
+    const xml = new XMLSerializer().serializeToString(svg.current);
+    const url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml" }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const ctx = canvas.getContext("2d");
+      URL.revokeObjectURL(url);
+      if (!ctx) return setNotice("PNG export failed");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) return setNotice("PNG export failed");
+        const pngUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = pngUrl;
+        a.download = "figure.png";
+        a.click();
+        URL.revokeObjectURL(pngUrl);
+        setNotice(`PNG exported at ${pngDpi} dpi`);
+      }, "image/png");
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      setNotice("PNG export failed");
+    };
+    img.src = url;
+  };
+
+  const scaleToWidth = (targetCm: number) => {
+    if (!Number.isFinite(targetCm) || targetCm <= 0) return;
+    const currentCm = canvasSize.width / PX_PER_CM;
+    if (currentCm <= 0) return;
+    const k = targetCm / currentCm;
+    const scaleNode = (node: SceneNode): SceneNode => {
+      const geometry = node.geometry
+        ? {
+            ...node.geometry,
+            x: node.geometry.x !== undefined ? node.geometry.x * k : undefined,
+            y: node.geometry.y !== undefined ? node.geometry.y * k : undefined,
+            width: node.geometry.width !== undefined ? node.geometry.width * k : undefined,
+            height: node.geometry.height !== undefined ? node.geometry.height * k : undefined,
+            points: node.geometry.points ? node.geometry.points.map((point) => ({ x: point.x * k, y: point.y * k })) : undefined,
+          }
+        : undefined;
+      const textStyle = node.style?.textStyle
+        ? { ...node.style.textStyle, fontSize: node.style.textStyle.fontSize !== undefined ? node.style.textStyle.fontSize * k : undefined }
+        : undefined;
+      const style = node.style ? { ...node.style, ...(textStyle ? { textStyle } : {}) } : undefined;
+      return {
+        ...node,
+        geometry,
+        style,
+        transform: { ...node.transform, translate: { x: node.transform.translate.x * k, y: node.transform.translate.y * k } },
+        children: node.children ? node.children.map(scaleNode) : undefined,
+      };
+    };
+    const next: SceneDocument = { ...doc, revision: doc.revision + 1, nodes: doc.nodes.map(scaleNode) };
+    setCanvasSize((s) => ({ width: Math.max(100, Math.round(targetCm * PX_PER_CM)), height: Math.max(100, Math.round(s.height * k)) }));
+    setHistory((old) => commitHistory(old, next));
+    persist(next);
+    setNotice(`Figure scaled to ${targetCm.toFixed(1)} cm wide`);
+  };
+
   const exportPdf = async () => {
-    if (!project) return setNotice("Create a project before exporting PDF");
+    if (!project?.handle) return setNotice("Create a project before exporting PDF");
     const result = await compileProject(project.handle);
     if (result.status !== "ok")
       return setNotice(
@@ -1489,7 +1150,7 @@ function App() {
   };
 
   const placeImage = async (file?: File) => {
-    if (!file || !project)
+    if (!file || !project?.handle)
       return setNotice("Create a project before placing an image");
     const name =
       file.name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(-120) || "image";
@@ -1501,6 +1162,7 @@ function App() {
     const base = shapeNode(
       "image",
       nodes.filter((node) => node.kind === "image").length,
+      { shape: shapeDefaults, text: textDefaults, line: lineDefaults },
     );
     const node = {
       ...base,
@@ -1512,12 +1174,29 @@ function App() {
     setSelected([node.id]);
   };
 
-
-
-
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (editingTextNodeId || editingLayerNameId) return;
+      const eventTarget = event.target as HTMLElement | null;
+      if (eventTarget && ["INPUT", "TEXTAREA", "SELECT"].includes(eventTarget.tagName)) return;
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && shortcutKeyToTool[event.key.toLowerCase()]) {
+        const next = shortcutKeyToTool[event.key.toLowerCase()];
+        if (next === "select" || next === "connector" || next === "path") {
+          setTool(next);
+          setNotice(
+            next === "connector"
+              ? "Drag between shape connection sites to connect"
+              : next === "path"
+                ? "Pen: Click to place points, double-click or Enter to finish"
+                : "Select",
+          );
+        } else if (next === "image") {
+          if (desktop) imageInput.current?.click();
+        } else {
+          add(next);
+        }
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -1575,8 +1254,8 @@ function App() {
         saveTexFile();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        if (texFileInput.current) texFileInput.current.click();
-        else void load(true);
+        if (desktop) void load(true);
+        else texFileInput.current?.click();
       } else if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selected.length
@@ -1629,6 +1308,321 @@ function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!windowMenuOpen) return;
+    const onOutside = (event: MouseEvent) => {
+      if (!(event.target as HTMLElement | null)?.closest?.(".menu-wrap")) setWindowMenuOpen(false);
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWindowMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onOutside);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      window.removeEventListener("mousedown", onOutside);
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, [windowMenuOpen]);
+
+  const dockPanels = (dock: DockId) =>
+    panelOrder.filter((id) => panels[id].visible && panels[id].dock === dock);
+  const leftDockPanels = dockPanels("left");
+  const rightDockPanels = dockPanels("right");
+  const bottomDockPanels = dockPanels("bottom");
+  const activeBottom = bottomDockPanels.includes(activeBottomTab) ? activeBottomTab : (bottomDockPanels[0] ?? "source");
+  const workspaceColumns = `${toolsVisible ? 52 : 0}px ${leftDockPanels.length ? 240 : 0}px minmax(0, 1fr) ${rightDockPanels.length ? 280 : 0}px`;
+
+  const applyShapeChange = (patch: { fill?: string; stroke?: string; strokeWidth?: number }) => {
+    if (active && SHAPE_KINDS.includes(active.kind)) {
+      update({ type: "update_properties", id: active.id, style: patch }, "Update shape style");
+    } else {
+      setShapeDefaults((current) => ({ ...current, ...patch }));
+    }
+  };
+
+  const applyTextChange = (patch: SceneTextStyle) => {
+    if (active && TEXT_KINDS.includes(active.kind)) {
+      update(
+        {
+          type: "update_properties",
+          id: active.id,
+          style: { ...active.style, textStyle: { ...active.style?.textStyle, ...patch } },
+        },
+        "Update text style",
+      );
+    } else {
+      setTextDefaults((current) => ({ ...current, ...patch }));
+    }
+  };
+
+  const applyLineChange = (patch: { stroke?: string; strokeWidth?: number; dash?: string; arrow?: string }) => {
+    if (active && LINE_KINDS.includes(active.kind)) {
+      update({ type: "update_properties", id: active.id, style: { ...active.style, ...patch } }, "Update line style");
+    } else {
+      setLineDefaults((current) => ({ ...current, ...patch }));
+    }
+  };
+
+  const applyRouting = (routing: "straight" | "elbow" | "curved") => {
+    if (active?.kind === "connector")
+      update({ type: "update_properties", id: active.id, bindings: { ...active.bindings, routing } }, "Change connector route");
+  };
+
+  const applyDimensionLabel = (value: string) => {
+    if (active?.kind === "dimension")
+      update({ type: "update_properties", id: active.id, text: value }, "Edit dimension label");
+  };
+
+  const shapeTarget = active && SHAPE_KINDS.includes(active.kind)
+    ? {
+        fill: active.style?.fill ?? defaultToolDefaults.shape.fill,
+        stroke: active.style?.stroke ?? defaultToolDefaults.shape.stroke,
+        strokeWidth: active.style?.strokeWidth ?? defaultToolDefaults.shape.strokeWidth,
+      }
+    : shapeDefaults;
+  const textTarget = active && TEXT_KINDS.includes(active.kind) ? (active.style?.textStyle ?? {}) : textDefaults;
+  const lineTarget = active && LINE_KINDS.includes(active.kind)
+    ? {
+        stroke: active.style?.stroke ?? defaultToolDefaults.line.stroke,
+        strokeWidth: active.style?.strokeWidth ?? defaultToolDefaults.line.strokeWidth,
+        dash: active.style?.dash ?? "",
+        arrow: active.style?.arrow ?? defaultToolDefaults.line.arrow,
+      }
+    : lineDefaults;
+
+  const movePanelToDock = (id: PanelId, dock: DockId) => {
+    const sideDockOnly = id === "layers" || id === "inspector";
+    if (dock === "bottom" && sideDockOnly) {
+      setNotice(`${panelTitles[id]} can only dock on the left or right side`);
+      setDraggingPanel(null);
+      setDragOverDock(null);
+      return;
+    }
+    setPanels((current) => ({ ...current, [id]: { ...current[id], dock } }));
+    setDraggingPanel(null);
+    setDragOverDock(null);
+  };
+
+  const dockDragHandlers = (dock: DockId) => ({
+    onDragOver: (event: React.DragEvent) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setDragOverDock(dock);
+    },
+    onDragLeave: () => setDragOverDock((current) => (current === dock ? null : current)),
+    onDrop: (event: React.DragEvent) => {
+      event.preventDefault();
+      const moved = event.dataTransfer.getData("application/x-figureit-panel");
+      if (moved && panelOrder.includes(moved as PanelId)) movePanelToDock(moved as PanelId, dock);
+    },
+  });
+
+  const panelWindow = (id: PanelId, children: React.ReactNode) => {
+    const slot = panels[id];
+    return (
+      <section key={id} className={`panel-window ${slot.collapsed ? "collapsed" : ""} ${draggingPanel === id ? "dragging" : ""}`}>
+        <header
+          className="panel-header"
+          draggable
+          title="Drag to move panel"
+          onDragStart={(event) => {
+            event.dataTransfer.setData("application/x-figureit-panel", id);
+            event.dataTransfer.effectAllowed = "move";
+            setDraggingPanel(id);
+          }}
+          onDragEnd={() => {
+            setDraggingPanel(null);
+            setDragOverDock(null);
+          }}
+        >
+          <span className="panel-drag-handle" aria-hidden="true">⠿</span>
+          <h2>{panelTitles[id]}</h2>
+          <button
+            aria-label={slot.collapsed ? `Expand ${panelTitles[id]} panel` : `Collapse ${panelTitles[id]} panel`}
+            title={slot.collapsed ? "Expand panel" : "Collapse panel"}
+            onClick={() => setPanels((current) => ({ ...current, [id]: { ...current[id], collapsed: !current[id].collapsed } }))}
+          >
+            {slot.collapsed ? "▸" : "▾"}
+          </button>
+          <button
+            aria-label={`Close ${panelTitles[id]} panel`}
+            title="Close panel"
+            onClick={() => setPanels((current) => ({ ...current, [id]: { ...current[id], visible: false } }))}
+          >
+            ×
+          </button>
+        </header>
+        {!slot.collapsed && <div className="panel-body">{children}</div>}
+      </section>
+    );
+  };
+
+  const restoreHistoryCommit = (commitId: string) => {
+    const handle = project?.handle;
+    if (!handle) return;
+    void restoreCommit(handle, commitId).then((restored) => {
+      if (!restored) return;
+      const parsed = parseTikz(restored.source);
+      if (!parsed.errors.length) {
+        setHistory(createHistory(parsed.document));
+        persist(parsed.document);
+        setNotice("Restored history");
+      }
+    });
+  };
+
+  const renderHistoryPanel = () => (
+    <div className="history-list">
+      {commits.map((commit) => (
+        <div key={commit.id} className="history-item">
+          <span>{commit.message}</span>
+          <button onClick={() => restoreHistoryCommit(commit.id)}>
+            Restore
+          </button>
+        </div>
+      ))}
+      {!commits.length && <p className="empty">No saved history yet.</p>}
+    </div>
+  );
+
+  const renderPanelBody = (id: PanelId): React.ReactNode => {
+    switch (id) {
+      case "layers":
+        return (
+          <LayersPanel
+            nodes={doc.nodes}
+            selected={selected}
+            collapsedGroups={collapsedGroups}
+            search={layerSearch}
+            editingNameId={editingLayerNameId}
+            onToggleCollapsed={(id) =>
+              setCollapsedGroups((old) => {
+                const next = new Set(old);
+                if (next.has(id)) next.delete(id);
+                else next.add(id);
+                return next;
+              })
+            }
+            onSearchChange={setLayerSearch}
+            onSelect={(id, additive) =>
+              setSelected((old) =>
+                additive
+                  ? old.includes(id)
+                    ? old.filter((item) => item !== id)
+                    : [...old, id]
+                  : [id],
+              )
+            }
+            onRename={(id, name) => update({ type: "set_metadata", id, name }, "Rename layer")}
+            onEditName={setEditingLayerNameId}
+            onToggleVisible={(id, solo) => {
+              if (solo) soloLayer(id);
+              else update({ type: "set_metadata", id, visible: !(find(doc.nodes, id)?.visible ?? true) });
+            }}
+            onToggleLocked={(id) =>
+              update({ type: "set_metadata", id, locked: !(find(doc.nodes, id)?.locked ?? false) })
+            }
+            onMove={(id, delta) => {
+              const list = siblingsFor(doc.nodes, id);
+              const idx = list?.findIndex((n) => n.id === id) ?? 0;
+              const target = Math.max(0, Math.min((list?.length ?? 1) - 1, idx + delta));
+              if (target !== idx)
+                update({ type: "reorder", id, index: target }, delta < 0 ? "Move layer up" : "Move layer down");
+            }}
+            onReorder={(draggedId, targetId) => {
+              const list = siblingsFor(doc.nodes, targetId);
+              const targetIdx = list?.findIndex((n) => n.id === targetId) ?? 0;
+              update({ type: "reorder", id: draggedId, index: targetIdx }, "Reorder layer");
+            }}
+            onGroup={() => {
+              transact("Group selection", [{ type: "group", childIds: selected, name: "Group" }]);
+              setSelected([]);
+            }}
+            onAlign={align}
+            onDistribute={distribute}
+          />
+        );
+      case "inspector":
+        return (
+          <InspectorPanel
+            active={active}
+            copiedStyle={copiedStyle}
+            canvasSize={canvasSize}
+            selectedCount={selected.length}
+            canvasPresets={canvasPresets}
+            onUpdate={update}
+            onDelete={() =>
+              transact("Delete selection", [
+                { type: "delete", id: active?.id ?? "" },
+              ])
+            }
+            onAlignToCanvas={alignToCanvas}
+            onMatchSize={matchSize}
+            onDuplicate={duplicate}
+            onCopyStyle={() => {
+              if (!active) return;
+              setCopiedStyle(active.style ? { ...active.style } : {});
+              setNotice("Copied style to format painter");
+            }}
+            onPasteStyle={() => {
+              if (copiedStyle && active)
+                update({ type: "update_properties", id: active.id, style: { ...copiedStyle } }, "Paste style");
+            }}
+            onSetCanvasSize={setCanvasSize}
+            onSelectAll={() => setSelected(nodes.map((n) => n.id))}
+            onBringForward={() => {
+              if (!active) return;
+              const list = siblingsFor(doc.nodes, active.id);
+              const index = list?.findIndex((node) => node.id === active.id) ?? 0;
+              update({ type: "reorder", id: active.id, index: index + 1 }, "Bring forward");
+            }}
+            onSendBackward={() => {
+              if (!active) return;
+              const list = siblingsFor(doc.nodes, active.id);
+              const index = list?.findIndex((node) => node.id === active.id) ?? 0;
+              update({ type: "reorder", id: active.id, index: Math.max(0, index - 1) }, "Send backward");
+            }}
+            onBringToFront={() => {
+              if (active) update({ type: "reorder", id: active.id, index: 999 }, "Bring to front");
+            }}
+            onSendToBack={() => {
+              if (active) update({ type: "reorder", id: active.id, index: 0 }, "Send to back");
+            }}
+          />
+        );
+      case "source":
+        return (
+          <SourceTab
+            doc={doc}
+            onApplySource={(newDoc) => {
+              flushCheckpoint();
+              setHistory(createHistory(newDoc));
+              persist(newDoc);
+              setSelected([]);
+            }}
+            onCopyTikz={copyTikz}
+            onNotice={setNotice}
+          />
+        );
+      case "history":
+        return renderHistoryPanel();
+      case "assistant":
+        return (
+          <AssistantTab
+            doc={doc}
+            selected={selected}
+            suggestion={suggestion}
+            setSuggestion={setSuggestion}
+            onApplyOperations={(label, ops) => {
+              flushCheckpoint();
+              transact(label, ops);
+            }}
+            onNotice={setNotice}
+          />
+        );
+    }
+  };
+
   return (
     <main className="figureit-shell">
       <header className="topbar">
@@ -1638,14 +1632,67 @@ function App() {
         <span className="file-name">
           {project?.title ?? "untitled-figure.tex"}
         </span>
+        <div className="menu-wrap">
+          <button
+            className="menu-trigger"
+            aria-haspopup="menu"
+            aria-expanded={windowMenuOpen}
+            onClick={() => setWindowMenuOpen((open) => !open)}
+          >
+            Window ▾
+          </button>
+          {windowMenuOpen && (
+            <div className="menu-popover" role="menu" aria-label="Window">
+              <button
+                role="menuitemcheckbox"
+                aria-checked={toolsVisible}
+                onClick={() => setToolsVisible((visible) => !visible)}
+              >
+                {toolsVisible ? "✓ " : ""}Tools
+              </button>
+              {panelOrder.map((id) => (
+                <button
+                  key={id}
+                  role="menuitemcheckbox"
+                  aria-checked={panels[id].visible}
+                  onClick={() =>
+                    setPanels((current) => ({
+                      ...current,
+                      [id]: { ...current[id], visible: !current[id].visible },
+                    }))
+                  }
+                >
+                  {panels[id].visible ? "✓ " : ""}
+                  {panelTitles[id]}
+                </button>
+              ))}
+              <div className="menu-divider" />
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setPanels(structuredClone(defaultPanels));
+                  setToolsVisible(true);
+                  setActiveBottomTab("source");
+                  setWindowMenuOpen(false);
+                }}
+              >
+                Reset panels
+              </button>
+            </div>
+          )}
+        </div>
         <div className="top-actions">
           <button aria-label="New project" onClick={() => load()} title="New project">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
             New
           </button>
-          <button aria-label="Open project" onClick={() => texFileInput.current ? texFileInput.current.click() : void load(true)} title="Open TikZ / TeX file (Cmd+O)">
+          <button aria-label="Open project" disabled={!desktop} onClick={() => void load(true)} title="Open FigureIt project (Cmd+O)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            Open
+            Open project
+          </button>
+          <button aria-label="Open TeX file" onClick={() => texFileInput.current?.click()} title="Open standalone TikZ / TeX file">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 14h8M8 18h6"/></svg>
+            Open .tex
           </button>
           <button aria-label="Save TeX file" onClick={saveTexFile} title="Save / Export as .tex file (Cmd+S)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -1683,110 +1730,83 @@ function App() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><polygon points="12 8 16 16 8 16"/></svg>
             Export SVG
           </button>
+          <select
+            aria-label="PNG export dpi"
+            value={pngDpi}
+            onChange={(e) => setPngDpi(Number(e.target.value))}
+            title="PNG resolution for journals that require raster images"
+            style={{ background: "#171b23", color: "#e8edf7", border: "1px solid #384155", borderRadius: "4px", padding: "4px 4px", fontSize: "11px" }}
+          >
+            <option value={300}>300 dpi</option>
+            <option value={600}>600 dpi</option>
+          </select>
+          <button onClick={exportPng} title="Export as PNG at the selected resolution">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><polyline points="21 15 16 10 5 21"/></svg>
+            Export PNG
+          </button>
           <button disabled={!desktop} title={desktop ? "Export as standalone PDF" : "PDF export is available on desktop"} onClick={() => void exportPdf()} className="export">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             Export PDF
           </button>
         </div>
       </header>
-      <div className="workspace">
-        <aside className="left-panel" aria-label="Tools and layers">
-          <section className="tool-grid">
-            <h2>Tools</h2>
-            {labels.map(([id, label]) => (
-              <button
-                key={id}
-                aria-label={label}
-                className={tool === id ? "active" : ""}
-                disabled={id === "image" && !desktop}
-                title={id === "image" && !desktop ? "Images are available on desktop" : undefined}
-                onClick={() =>
-                  id === "select" || id === "connector" || id === "path"
-                    ? (setTool(id),
-                      setNotice(
-                        id === "connector"
-                          ? "Drag between shape connection sites to connect"
-                          : id === "path"
-                            ? "Pen: Click to place points, double-click or Enter to finish"
-                            : "Select",
-                      ))
-                    : id === "image"
-                      ? imageInput.current?.click()
-                      : add(id)
-                }
-              >
-                <span className="tool-icon-wrap"><ToolIcon kind={id} /></span>
-                <small>{label}</small>
-              </button>
-            ))}
-            <input ref={imageInput} aria-label="Image file" type="file" accept="image/*" hidden onChange={(event) => void placeImage(event.target.files?.[0])} />
-            <input
-              ref={texFileInput}
-              aria-label="TeX file"
-              type="file"
-              accept=".tex,.tikz,.latex,text/plain"
-              hidden
-              onChange={(event) => {
-                const f = event.target.files?.[0];
-                if (f) void openTexFile(f);
-                event.target.value = "";
-              }}
-            />
-          </section>
-
-          <section className="layers">
-            <div className="panel-title">
-              <h2>Layers</h2>
-              <button
-                aria-label="Group selected layers"
-                disabled={selected.length < 2}
-                onClick={() => {
-                  transact("Group selection", [
-                    { type: "group", childIds: selected, name: "Group" },
-                  ]);
-                  setSelected([]);
-                }}
-              >
-                Group
-              </button>
-            </div>
-            <input
-              className="layer-search"
-              placeholder="Filter layers..."
-              value={layerSearch}
-              onChange={(e) => setLayerSearch(e.target.value)}
-            />
-            <div className="layer-list">
-              {doc.nodes.map((node) => <Fragment key={node.id}>{layer(node)}</Fragment>)}
-            </div>
-            {selected.length > 1 && <div className="layer-arrange" aria-label="Align selected layers">
-              <button aria-label="Align left" onClick={() => align("left")} title="Align Left">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="4" y1="3" x2="4" y2="21"/><rect x="4" y="6" width="14" height="4" rx="1"/><rect x="4" y="14" width="8" height="4" rx="1"/></svg>
-              </button>
-              <button aria-label="Align center" onClick={() => align("center")} title="Align Center (H)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="12" y1="3" x2="12" y2="21"/><rect x="5" y="6" width="14" height="4" rx="1"/><rect x="8" y="14" width="8" height="4" rx="1"/></svg>
-              </button>
-              <button aria-label="Align right" onClick={() => align("right")} title="Align Right">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="20" y1="3" x2="20" y2="21"/><rect x="6" y="6" width="14" height="4" rx="1"/><rect x="12" y="14" width="8" height="4" rx="1"/></svg>
-              </button>
-              <button aria-label="Align top" onClick={() => align("top")} title="Align Top">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="4" x2="21" y2="4"/><rect x="6" y="4" width="4" height="14" rx="1"/><rect x="14" y="4" width="4" height="8" rx="1"/></svg>
-              </button>
-              <button aria-label="Align middle" onClick={() => align("middle")} title="Align Middle (V)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="12" x2="21" y2="12"/><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="8" width="4" height="8" rx="1"/></svg>
-              </button>
-              <button aria-label="Align bottom" onClick={() => align("bottom")} title="Align Bottom">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="20" x2="21" y2="20"/><rect x="6" y="6" width="4" height="14" rx="1"/><rect x="14" y="12" width="4" height="8" rx="1"/></svg>
-              </button>
-              <button aria-label="Distribute horizontally" disabled={selected.length < 3} onClick={() => distribute("horizontal")} title="Distribute Horizontally">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="2" y="5" width="4" height="14" rx="1"/><rect x="10" y="5" width="4" height="14" rx="1"/><rect x="18" y="5" width="4" height="14" rx="1"/></svg>
-              </button>
-              <button aria-label="Distribute vertically" disabled={selected.length < 3} onClick={() => distribute("vertical")} title="Distribute Vertically">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="5" y="2" width="14" height="4" rx="1"/><rect x="5" y="10" width="14" height="4" rx="1"/><rect x="5" y="18" width="14" height="4" rx="1"/></svg>
-              </button>
-            </div>}
-          </section>
-        </aside>
+      <div className="optionsbar" aria-label="Tool options">
+        <ToolOptions
+          tool={tool}
+          active={active}
+          selectedCount={selected.length}
+          snapEnabled={snapEnabled}
+          gridEnabled={showGrid}
+          onToggleSnap={() => setSnapEnabled((enabled) => !enabled)}
+          onToggleGrid={() => setShowGrid((visible) => !visible)}
+          shapeTarget={shapeTarget}
+          onShapeChange={applyShapeChange}
+          textTarget={textTarget}
+          onTextChange={applyTextChange}
+          lineTarget={lineTarget}
+          onLineChange={applyLineChange}
+          onRouting={applyRouting}
+          onDimensionLabel={applyDimensionLabel}
+          onAlign={align}
+          onDistribute={distribute}
+        />
+      </div>
+      <div className="workspace" style={{ gridTemplateColumns: workspaceColumns }}>
+        {toolsVisible && (
+          <EditorToolbar
+            tool={tool}
+            desktop={desktop}
+            imageInputRef={imageInput}
+            texFileInputRef={texFileInput}
+            onSelectTool={(id) =>
+              id === "select" || id === "connector" || id === "path"
+                ? (setTool(id),
+                  setNotice(
+                    id === "connector"
+                      ? "Drag between shape connection sites to connect"
+                      : id === "path"
+                        ? "Pen: Click to place points, double-click or Enter to finish"
+                        : "Select",
+                  ))
+                : id === "image"
+                  ? imageInput.current?.click()
+                  : add(id)
+            }
+            onPlaceImage={(file) => void placeImage(file)}
+            onOpenTexFile={(file) => void openTexFile(file)}
+          />
+        )}
+        {leftDockPanels.length > 0 && (
+          <aside
+            className={`dock dock-left ${dragOverDock === "left" ? "drag-over" : ""}`}
+            aria-label="Left panels"
+            {...dockDragHandlers("left")}
+          >
+            {leftDockPanels.map((id) =>
+              panelWindow(id, renderPanelBody(id)),
+            )}
+          </aside>
+        )}
         <section className="canvas-area" aria-label="Artboard">
           <div className="canvas-controls">
             <div className="canvas-controls-group">
@@ -1798,14 +1818,6 @@ function App() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </button>
               <button onClick={() => setZoom(1)} title="Reset zoom">100%</button>
-              <button onClick={() => setShowGrid((g) => !g)} className={showGrid ? "active" : ""} title="Toggle grid pattern">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
-                Grid
-              </button>
-              <button onClick={() => setSnapEnabled((s) => !s)} className={snapEnabled ? "active" : ""} title="Toggle smart snapping guides">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M6 3v7a6 6 0 0 0 12 0V3"/><line x1="4" y1="3" x2="8" y2="3"/><line x1="16" y1="3" x2="20" y2="3"/></svg>
-                Snap
-              </button>
               <select
                 aria-label="Canvas size preset"
                 value={`${canvasSize.width}x${canvasSize.height}`}
@@ -1860,6 +1872,20 @@ function App() {
               <span style={{ fontSize: "11px", color: "#8a99b5" }}>
                 {(canvasSize.width / PX_PER_CM).toFixed(1)} × {(canvasSize.height / PX_PER_CM).toFixed(1)} cm
               </span>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: "11px", color: "#a0aec0" }} title="Scale the whole figure so its width matches a paper column">
+                Fit width (cm):
+                <input
+                  aria-label="Fit width cm"
+                  type="number"
+                  min="1"
+                  max="40"
+                  step="0.1"
+                  className="canvas-size-input"
+                  value={fitWidthCm}
+                  onChange={(e) => setFitWidthCm(Math.max(1, Number(e.target.value)))}
+                />
+              </label>
+              <button onClick={() => scaleToWidth(fitWidthCm)} title="Scale every element so the figure is this wide in the paper">Fit</button>
               <span>Scene · {doc.revision}</span>
             </div>
           </div>
@@ -2019,6 +2045,50 @@ function App() {
                           strokeWidth={(style.strokeWidth ?? 0.05) * PX_PER_CM}
                           strokeDasharray={dash}
                         />
+                      ) : node.kind === "dimension" && rawPoints.length >= 2 ? (
+                        (() => {
+                          const p0 = rawPoints[0];
+                          const p1 = rawPoints[1];
+                          const dx = p1.x - p0.x;
+                          const dy = p1.y - p0.y;
+                          const len = Math.hypot(dx, dy) || 1;
+                          const ux = dx / len;
+                          const uy = dy / len;
+                          const stroke = style.stroke ?? "#26334d";
+                          const sw = (style.strokeWidth ?? 0.03) * PX_PER_CM;
+                          const toScreen = (cx: number, cy: number) => ({ x: cx * PX_PER_CM, y: canvasSize.height - cy * PX_PER_CM });
+                          const a = toScreen(p0.x, p0.y);
+                          const b = toScreen(p1.x, p1.y);
+                          const mid = toScreen((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+                          const tick = 0.14 * PX_PER_CM;
+                          const perpX = uy;
+                          const perpY = ux;
+                          const labelX = mid.x - uy * 0.45 * PX_PER_CM;
+                          const labelY = mid.y - ux * 0.45 * PX_PER_CM;
+                          return (
+                            <g>
+                              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={stroke} strokeWidth={sw} strokeDasharray={dash} />
+                              <line x1={a.x - perpX * tick} y1={a.y - perpY * tick} x2={a.x + perpX * tick} y2={a.y + perpY * tick} stroke={stroke} strokeWidth={sw} />
+                              <line x1={b.x - perpX * tick} y1={b.y - perpY * tick} x2={b.x + perpX * tick} y2={b.y + perpY * tick} stroke={stroke} strokeWidth={sw} />
+                              {node.text && (
+                                <text
+                                  x={labelX}
+                                  y={labelY}
+                                  textAnchor="middle"
+                                  dominantBaseline="middle"
+                                  fontSize={style.textStyle?.fontSize ?? 10}
+                                  fill={stroke}
+                                  paintOrder="stroke"
+                                  stroke="#ffffff"
+                                  strokeWidth={3}
+                                  strokeLinejoin="round"
+                                >
+                                  {node.text}
+                                </text>
+                              )}
+                            </g>
+                          );
+                        })()
                       ) : node.kind === "line" ||
                         node.kind === "path" ||
                         node.kind === "connector" ? (
@@ -2060,7 +2130,7 @@ function App() {
                           strokeDasharray={dash}
                         />
                       )}
-                      {node.text && !["text", "math"].includes(node.kind) && editingTextNodeId !== node.id && (
+                      {node.text && !["text", "math", "dimension"].includes(node.kind) && editingTextNodeId !== node.id && (
                         renderRichText(node.text, style.textStyle, style.stroke ?? "#26334d", { x, y, w, h }, false)
                       )}
                       {hasSuggestion && (
@@ -2322,15 +2392,18 @@ function App() {
               const targetNode = find(doc.nodes, editingTextNodeId);
               if (!targetNode?.geometry) return null;
               const g = targetNode.geometry;
-              const isStandalone = ["text", "math"].includes(targetNode.kind);
+              const isStandalone = ["text", "math"].includes(targetNode.kind) || targetNode.kind === "dimension";
               const ts = targetNode.style?.textStyle;
               const fontSize = ts?.fontSize ?? (isStandalone ? 14 : 12);
+              const dimMid = targetNode.kind === "dimension" && g.points && g.points.length >= 2
+                ? { x: (g.points[0].x + g.points[1].x) / 2, y: (g.points[0].y + g.points[1].y) / 2 }
+                : undefined;
 
               const left = isStandalone
-                ? (g.x ?? 0) * PX_PER_CM
+                ? (dimMid?.x ?? g.x ?? 0) * PX_PER_CM
                 : (g.x ?? 0) * PX_PER_CM;
               const top = isStandalone
-                ? canvasSize.height - (g.y ?? 0) * PX_PER_CM - fontSize - 4
+                ? canvasSize.height - (dimMid?.y ?? g.y ?? 0) * PX_PER_CM - fontSize - 4
                 : canvasSize.height - ((g.y ?? 0) + (g.height ?? 2.2)) * PX_PER_CM;
               const width = isStandalone
                 ? Math.max(160, (g.width ?? 3) * PX_PER_CM)
@@ -2405,913 +2478,59 @@ function App() {
             </span>
           </footer>
         </section>
-        <aside className="inspector" aria-label="Inspector">
-          <h2>Inspector</h2>
-          {active ? (
-            <>
-              <label>
-                Name
-                <input
-                  aria-label="Layer name"
-                  value={active.name ?? ""}
-                  onChange={(event) =>
-                    update(
-                      {
-                        type: "set_metadata",
-                        id: active.id,
-                        name: event.target.value,
-                      },
-                      "Rename layer",
-                    )
-                  }
-                />
-              </label>
-              <div className="field-grid">
-                <label>
-                  X
-                  <input
-                    aria-label="X position"
-                    type="number"
-                    value={active.geometry?.x ?? 0}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        geometry: { x: Number(event.target.value) },
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Y
-                  <input
-                    aria-label="Y position"
-                    type="number"
-                    value={active.geometry?.y ?? 0}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        geometry: { y: Number(event.target.value) },
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  W
-                  <input
-                    aria-label="Width"
-                    type="number"
-                    value={active.geometry?.width ?? 0}
-                    onChange={(event) =>
-                      update(
-                        {
-                          type: "update_properties",
-                          id: active.id,
-                          geometry: { width: Number(event.target.value) },
-                        },
-                        "Resize selection",
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  H
-                  <input
-                    aria-label="Height"
-                    type="number"
-                    value={active.geometry?.height ?? 0}
-                    onChange={(event) =>
-                      update(
-                        {
-                          type: "update_properties",
-                          id: active.id,
-                          geometry: { height: Number(event.target.value) },
-                        },
-                        "Resize selection",
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  Rotation
-                  <input
-                    aria-label="Rotation"
-                    type="number"
-                    value={active.transform.rotate}
-                    onChange={(event) =>
-                      update({
-                        type: "transform",
-                        id: active.id,
-                        transform: { rotate: Number(event.target.value) },
-                      })
-                    }
-                  />
-                </label>
-              </div>
-              <label>
-                Fill type
-                <select aria-label="Fill type" value={active.style?.gradient ? "gradient" : active.style?.fill === "none" ? "none" : "solid"} onChange={(event) => update({ type: "update_properties", id: active.id, style: event.target.value === "gradient" ? { fill: undefined, gradient: active.style?.gradient ?? { start: active.style?.fill ?? "#90baff", end: "#ffffff", angle: 0 } } : event.target.value === "none" ? { fill: "none", gradient: undefined } : { fill: active.style?.fill === "none" ? "#90baff" : active.style?.fill ?? "#90baff", gradient: undefined } })}>
-                  <option value="solid">Solid</option><option value="gradient">Gradient</option><option value="none">No fill</option>
-                </select>
-              </label>
-              <label>
-                Fill
-                <div className="color-input-wrap">
-                  <input
-                    type="color"
-                    className="color-picker-input"
-                    aria-label="Fill color picker"
-                    disabled={Boolean(active.style?.gradient) || active.style?.fill === "none"}
-                    value={active.style?.fill && /^#[\da-f]{6}$/i.test(active.style.fill) ? active.style.fill : "#3b82f6"}
-                    onChange={(event) => update({ type: "update_properties", id: active.id, style: { fill: event.target.value } })}
-                  />
-                  <input
-                    aria-label="Fill color"
-                    disabled={Boolean(active.style?.gradient) || active.style?.fill === "none"}
-                    value={active.style?.fill ?? ""}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        style: { fill: event.target.value },
-                      })
-                    }
-                  />
-                </div>
-                {!active.style?.gradient && active.style?.fill !== "none" && (
-                  <div className="color-swatches" aria-label="Fill palette swatches">
-                    {paletteColors.map((hex) => (
-                      <button
-                        key={hex}
-                        type="button"
-                        className={`color-swatch ${active.style?.fill === hex ? "active" : ""}`}
-                        style={{ backgroundColor: hex }}
-                        title={`Set fill ${hex}`}
-                        onClick={() => update({ type: "update_properties", id: active.id, style: { fill: hex } })}
-                      />
-                    ))}
-                  </div>
-                )}
-              </label>
-              {active.style?.gradient && <div className="field-grid">
-                <label>Gradient start<input aria-label="Gradient start" value={active.style.gradient.start} onChange={(event) => update({ type: "update_properties", id: active.id, style: { gradient: { ...active.style!.gradient!, start: event.target.value } } })} /></label>
-                <label>Gradient end<input aria-label="Gradient end" value={active.style.gradient.end} onChange={(event) => update({ type: "update_properties", id: active.id, style: { gradient: { ...active.style!.gradient!, end: event.target.value } } })} /></label>
-                <label>Angle<input aria-label="Gradient angle" type="number" value={active.style.gradient.angle} onChange={(event) => update({ type: "update_properties", id: active.id, style: { gradient: { ...active.style!.gradient!, angle: Number(event.target.value) } } })} /></label>
-              </div>}
-              <label>
-                Stroke
-                <div className="color-input-wrap">
-                  <input
-                    type="color"
-                    className="color-picker-input"
-                    aria-label="Stroke color picker"
-                    value={active.style?.stroke && /^#[\da-f]{6}$/i.test(active.style.stroke) ? active.style.stroke : "#26334d"}
-                    onChange={(event) => update({ type: "update_properties", id: active.id, style: { stroke: event.target.value } })}
-                  />
-                  <input
-                    aria-label="Stroke color"
-                    value={active.style?.stroke ?? ""}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        style: { stroke: event.target.value },
-                      })
-                    }
-                  />
-                </div>
-                <div className="color-swatches" aria-label="Stroke palette swatches">
-                  {paletteColors.map((hex) => (
-                    <button
-                      key={hex}
-                      type="button"
-                      className={`color-swatch ${active.style?.stroke === hex ? "active" : ""}`}
-                      style={{ backgroundColor: hex }}
-                      title={`Set stroke ${hex}`}
-                      onClick={() => update({ type: "update_properties", id: active.id, style: { stroke: hex } })}
-                    />
-                  ))}
-                </div>
-              </label>
-
-              <label>
-                Text
-                <textarea
-                  aria-label="Text content"
-                  rows={3}
-                  placeholder="Enter text (Shift+Enter for newline)..."
-                  value={active.text ?? ""}
-                  onChange={(event) => update({ type: "update_properties", id: active.id, text: event.target.value }, "Edit text")}
-                />
-              </label>
-              <div className="field-grid" style={{ marginTop: 2 }}>
-                <label>
-                  Font
-                  <select
-                    aria-label="Font family"
-                    value={active.style?.textStyle?.fontFamily ?? "sans"}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        style: {
-                          ...active.style,
-                          textStyle: {
-                            ...active.style?.textStyle,
-                            fontFamily: event.target.value as SceneTextStyle["fontFamily"],
-                          },
-                        },
-                      }, "Change font")
-                    }
-                  >
-                    <option value="sans">Sans (Modern)</option>
-                    <option value="serif">Serif (LaTeX)</option>
-                    <option value="mono">Mono (Code)</option>
-                  </select>
-                </label>
-                <label>
-                  Size (pt)
-                  <input
-                    aria-label="Font size"
-                    type="number"
-                    min="6"
-                    max="96"
-                    value={active.style?.textStyle?.fontSize ?? (["text", "math"].includes(active.kind) ? 14 : 12)}
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        style: {
-                          ...active.style,
-                          textStyle: {
-                            ...active.style?.textStyle,
-                            fontSize: Math.max(6, Number(event.target.value)),
-                          },
-                        },
-                      }, "Change font size")
-                    }
-                  />
-                </label>
-              </div>
-              <div className="format-bar" aria-label="Text formatting">
-                <button
-                  type="button"
-                  aria-label="Bold text"
-                  className={active.style?.textStyle?.bold ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          bold: !active.style?.textStyle?.bold,
-                        },
-                      },
-                    }, "Toggle bold")
-                  }
-                  title="Toggle Bold (B)"
-                >
-                  <b>B</b>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Italic text"
-                  className={active.style?.textStyle?.italic ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          italic: !active.style?.textStyle?.italic,
-                        },
-                      },
-                    }, "Toggle italic")
-                  }
-                  title="Toggle Italic (I)"
-                >
-                  <i>I</i>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Strikethrough text"
-                  className={active.style?.textStyle?.strike ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          strike: !active.style?.textStyle?.strike,
-                        },
-                      },
-                    }, "Toggle strikethrough")
-                  }
-                  title="Toggle Strikethrough (S)"
-                >
-                  <s>S</s>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Toggle math mode"
-                  className={active.text?.startsWith("$") && active.text.endsWith("$") ? "active" : ""}
-                  onClick={() => {
-                    const current = active.text ?? "";
-                    const next = current.startsWith("$") && current.endsWith("$") ? current.slice(1, -1) : `$${current}$`;
-                    update({ type: "update_properties", id: active.id, text: next }, "Toggle math mode");
-                  }}
-                  title="Toggle LaTeX Math Mode ($...$)"
-                >
-                  ∑
-                </button>
-                <div style={{ width: 1, height: 16, background: "#384155", margin: "0 2px" }} />
-                <button
-                  type="button"
-                  aria-label="Text align left"
-                  className={active.style?.textStyle?.align === "left" ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          align: "left",
-                        },
-                      },
-                    }, "Align text left")
-                  }
-                  title="Align Left"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Text align center"
-                  className={(!active.style?.textStyle?.align || active.style?.textStyle?.align === "center") ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          align: "center",
-                        },
-                      },
-                    }, "Align text center")
-                  }
-                  title="Align Center"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Text align right"
-                  className={active.style?.textStyle?.align === "right" ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          align: "right",
-                        },
-                      },
-                    }, "Align text right")
-                  }
-                  title="Align Right"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="9" y1="12" x2="21" y2="12"/><line x1="6" y1="18" x2="21" y2="18"/></svg>
-                </button>
-                <div style={{ width: 1, height: 16, background: "#384155", margin: "0 2px" }} />
-                <button
-                  type="button"
-                  aria-label="Text align top"
-                  className={active.style?.textStyle?.valign === "top" ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          valign: "top",
-                        },
-                      },
-                    }, "Align text top")
-                  }
-                  title="Align Top"
-                >
-                  ⤊
-                </button>
-                <button
-                  type="button"
-                  aria-label="Text align middle"
-                  className={(!active.style?.textStyle?.valign || active.style?.textStyle?.valign === "middle") ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          valign: "middle",
-                        },
-                      },
-                    }, "Align text middle")
-                  }
-                  title="Align Middle"
-                >
-                  ⬍
-                </button>
-                <button
-                  type="button"
-                  aria-label="Text align bottom"
-                  className={active.style?.textStyle?.valign === "bottom" ? "active" : ""}
-                  onClick={() =>
-                    update({
-                      type: "update_properties",
-                      id: active.id,
-                      style: {
-                        ...active.style,
-                        textStyle: {
-                          ...active.style?.textStyle,
-                          valign: "bottom",
-                        },
-                      },
-                    }, "Align text bottom")
-                  }
-                  title="Align Bottom"
-                >
-                  ⤋
-                </button>
-              </div>
-
-              <div className="section-actions" style={{ marginBottom: "10px", marginTop: "10px" }}>
-                <button onClick={() => { setCopiedStyle(active.style ? { ...active.style } : {}); setNotice("Copied style to format painter"); }} title="Copy style (Format Painter)">Copy Style</button>
-                <button disabled={!copiedStyle} onClick={() => { if (copiedStyle && active) update({ type: "update_properties", id: active.id, style: { ...copiedStyle } }, "Paste style"); }} title="Paste copied style">Paste Style</button>
-              </div>
-
-              <div className="field-grid">
-                <label>
-                  Stroke width
-                  <input aria-label="Stroke width" type="number" min="0" step="0.01" value={active.style?.strokeWidth ?? 0} onChange={(event) => update({ type: "update_properties", id: active.id, style: { strokeWidth: Math.max(0, Number(event.target.value)) } })} />
-                </label>
-                <label>
-                  Line pattern
-                  <select
-                    aria-label="Line pattern"
-                    value={
-                      active.style?.dash === "on 4pt off 3pt" || active.style?.dash === "dashed"
-                        ? "dashed"
-                        : active.style?.dash === "on 0pt off 2pt" || active.style?.dash === "dotted"
-                          ? "dotted"
-                          : "solid"
-                    }
-                    onChange={(event) =>
-                      update({
-                        type: "update_properties",
-                        id: active.id,
-                        style: {
-                          dash:
-                            event.target.value === "solid"
-                              ? ""
-                              : event.target.value === "dashed"
-                                ? "on 4pt off 3pt"
-                                : "on 0pt off 2pt",
-                        },
-                      })
-                    }
-                  >
-                    <option value="solid">Solid (—)</option>
-                    <option value="dashed">Dashed (---)</option>
-                    <option value="dotted">Dotted (···)</option>
-                  </select>
-                </label>
-              </div>
-              <div className="field-grid">
-                <label>
-                  Opacity
-                  <input aria-label="Opacity" type="number" min="0" max="1" step="0.05" value={active.style?.opacity ?? 1} onChange={(event) => update({ type: "update_properties", id: active.id, style: { opacity: Math.min(1, Math.max(0, Number(event.target.value))) } })} />
-                </label>
-              </div>
-
-              {["line", "path", "connector"].includes(active.kind) && (
-                <>
-                <div className="field-grid">
-                  <label>
-                    Arrow ends
-                    <select
-                      aria-label="Line ends"
-                      value={
-                        active.style?.arrow === "<-"
-                          ? "start"
-                          : active.style?.arrow === "<->"
-                            ? "both"
-                            : active.style?.arrow === "->" || (active.kind === "connector" && active.style?.arrow === undefined)
-                              ? "end"
-                              : "none"
-                      }
-                      onChange={(event) =>
-                        update({
-                          type: "update_properties",
-                          id: active.id,
-                          style: {
-                            arrow:
-                              event.target.value === "start"
-                                ? "<-"
-                                : event.target.value === "both"
-                                  ? "<->"
-                                  : event.target.value === "end"
-                                    ? "->"
-                                    : "",
-                          },
-                        })
-                      }
-                    >
-                      <option value="none">None (—)</option>
-                      <option value="end">End Arrow (→)</option>
-                      <option value="start">Start Arrow (←)</option>
-                      <option value="both">Both Ends (↔)</option>
-                    </select>
-                  </label>
-                  <label>
-                    Routing
-                    <select
-                      aria-label="Connector route"
-                      value={active.bindings?.routing ?? "straight"}
-                      onChange={(event) =>
-                        update(
-                          {
-                            type: "update_properties",
-                            id: active.id,
-                            bindings: {
-                              ...active.bindings,
-                              routing: event.target.value as "straight" | "elbow" | "curved",
-                            },
-                          },
-                          "Change connector route",
-                        )
-                      }
-                    >
-                      <option value="straight">Straight (—)</option>
-                      <option value="elbow">Elbow (↳)</option>
-                      <option value="curved">Curved (∿)</option>
-                    </select>
-                  </label>
-                </div>
-                <div className="section-actions" style={{ marginTop: 4 }}>
-                  <button
-                    aria-label="Add waypoint"
-                    title="Add waypoint / vertex to line or connector"
-                    onClick={() => {
-                      const pts = active.geometry?.points ?? [{ x: 1, y: 1 }, { x: 4, y: 3 }];
-                      if (pts.length >= 2) {
-                        const mid = {
-                          x: editorNumber((pts[0].x + pts[1].x) / 2),
-                          y: editorNumber((pts[0].y + pts[1].y) / 2),
-                        };
-                        const newPoints = [pts[0], mid, ...pts.slice(1)];
-                        update(
-                          {
-                            type: "update_properties",
-                            id: active.id,
-                            geometry: { points: newPoints },
-                          },
-                          "Add waypoint to line",
-                        );
-                      }
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M12 5v14M5 12h14"/></svg>
-                    Add Waypoint
-                  </button>
-                  {active.geometry?.points && active.geometry.points.length > 2 && (
-                    <button
-                      aria-label="Remove waypoint"
-                      title="Remove last intermediate waypoint"
-                      onClick={() => {
-                        const pts = active.geometry!.points!;
-                        const newPoints = [pts[0], ...pts.slice(2)];
-                        update(
-                          {
-                            type: "update_properties",
-                            id: active.id,
-                            geometry: { points: newPoints },
-                          },
-                          "Remove waypoint",
-                        );
-                      }}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14"/></svg>
-                      Remove Waypoint
-                    </button>
-                  )}
-                  <button
-                    aria-label="Reverse direction"
-                    title="Reverse start and end endpoints"
-                    onClick={() => {
-                      const pts = active.geometry?.points;
-                      if (pts && pts.length >= 2) {
-                        const rev = [...pts].reverse();
-                        const bindings = active.bindings ? {
-                          ...active.bindings,
-                          start: active.bindings.end,
-                          end: active.bindings.start,
-                        } : undefined;
-                        update(
-                          {
-                            type: "update_properties",
-                            id: active.id,
-                            geometry: { points: rev },
-                            ...(bindings ? { bindings } : {}),
-                          },
-                          "Reverse line direction",
-                        );
-                      }
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
-                    Reverse
-                  </button>
-                </div>
-              </>
-              )}
-              <div className="section-actions">
-                <button onClick={() => alignToCanvas("h")} title="Center horizontally on canvas">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="12" y1="2" x2="12" y2="22"/><rect x="4" y="7" width="16" height="10" rx="2"/></svg>
-                  Center Canvas H
-                </button>
-                <button onClick={() => alignToCanvas("v")} title="Center vertically on canvas">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="2" y1="12" x2="22" y2="12"/><rect x="7" y="4" width="10" height="16" rx="2"/></svg>
-                  Center Canvas V
-                </button>
-                {selected.length > 1 && (
-                  <>
-                    <button onClick={() => matchSize("width")} title="Match width of active shape">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="3" y1="12" x2="21" y2="12"/><polyline points="7 8 3 12 7 16"/><polyline points="17 8 21 12 17 16"/></svg>
-                      Match Width
-                    </button>
-                    <button onClick={() => matchSize("height")} title="Match height of active shape">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="12" y1="3" x2="12" y2="21"/><polyline points="8 7 12 3 16 7"/><polyline points="8 17 12 21 16 17"/></svg>
-                      Match Height
-                    </button>
-                  </>
-                )}
-              </div>
-              <div className="arrange">
-                <button
-                  aria-label={
-                    active.locked
-                      ? "Unlock selected layer"
-                      : "Lock selected layer"
-                  }
-                  onClick={() =>
-                    update({
-                      type: "set_metadata",
-                      id: active.id,
-                      locked: !active.locked,
-                    })
-                  }
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d={active.locked ? "M7 11V7a5 5 0 0 1 10 0v4" : "M7 11V7a5 5 0 0 1 9.9-1"}/></svg>
-                  {active.locked ? "Unlock" : "Lock"}
-                </button>
-                <button
-                  aria-label={
-                    active.visible
-                      ? "Hide selected layer"
-                      : "Show selected layer"
-                  }
-                  onClick={() =>
-                    update({
-                      type: "set_metadata",
-                      id: active.id,
-                      visible: !active.visible,
-                    })
-                  }
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                  {active.visible ? "Hide" : "Show"}
-                </button>
-                <button
-                  aria-label="Bring forward"
-                  onClick={() => { const list = siblingsFor(doc.nodes, active.id); const index = list?.findIndex((node) => node.id === active.id) ?? 0; update({ type: "reorder", id: active.id, index: index + 1 }, "Bring forward"); }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="18 15 12 9 6 15"/></svg>
-                  Forward
-                </button>
-                <button aria-label="Send backward" onClick={() => { const list = siblingsFor(doc.nodes, active.id); const index = list?.findIndex((node) => node.id === active.id) ?? 0; update({ type: "reorder", id: active.id, index: Math.max(0, index - 1) }, "Send backward"); }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="6 9 12 15 18 9"/></svg>
-                  Backward
-                </button>
-                <button aria-label="Bring to front" onClick={() => update({ type: "reorder", id: active.id, index: 999 }, "Bring to front")}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>
-                  To front
-                </button>
-                <button aria-label="Send to back" onClick={() => update({ type: "reorder", id: active.id, index: 0 }, "Send to back")}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
-                  To back
-                </button>
-                <button aria-label="Duplicate selected layer" onClick={duplicate}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                  Duplicate
-                </button>
-                <button aria-label="Flip horizontal" disabled={active.kind === "group"} onClick={() => update({ type: "transform", id: active.id, transform: { xScale: -active.transform.xScale } }, "Flip horizontal")}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="8 4 4 8 8 12"/><line x1="4" y1="8" x2="20" y2="8"/><polyline points="16 20 20 16 16 12"/><line x1="20" y1="16" x2="4" y2="16"/></svg>
-                  Flip H
-                </button>
-                <button aria-label="Flip vertical" disabled={active.kind === "group"} onClick={() => update({ type: "transform", id: active.id, transform: { yScale: -active.transform.yScale } }, "Flip vertical")}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="4 8 8 4 12 8"/><line x1="8" y1="4" x2="8" y2="20"/><polyline points="20 16 16 20 12 16"/><line x1="16" y1="20" x2="16" y2="4"/></svg>
-                  Flip V
-                </button>
-                <button
-                  aria-label="Ungroup selected layer"
-                  disabled={active.kind !== "group"}
-                  onClick={() =>
-                    update(
-                      { type: "ungroup", id: active.id },
-                      "Ungroup selection",
-                    )
-                  }
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><line x1="10" y1="10" x2="14" y2="14"/></svg>
-                  Ungroup
-                </button>
-                <button
-                  onClick={() =>
-                    transact("Delete selection", [
-                      { type: "delete", id: active.id },
-                    ])
-                  }
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                  Delete
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="canvas-inspector">
-              <h3 style={{ fontSize: "12px", color: "#8a99b5", marginBottom: "8px" }}>Canvas Properties</h3>
-              <label>
-                Preset
-                <select
-                  value={`${canvasSize.width}x${canvasSize.height}`}
-                  onChange={(e) => {
-                    const [w, h] = e.target.value.split("x").map(Number);
-                    if (w && h) setCanvasSize({ width: w, height: h });
-                  }}
-                >
-                  {canvasPresets.map((p) => (
-                    <option key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="field-grid">
-                <label>
-                  Width (px)
-                  <input
-                    type="number"
-                    min="300"
-                    max="3000"
-                    step="20"
-                    value={canvasSize.width}
-                    onChange={(e) => setCanvasSize((s) => ({ ...s, width: Math.max(200, Number(e.target.value)) }))}
-                  />
-                </label>
-                <label>
-                  Height (px)
-                  <input
-                    type="number"
-                    min="200"
-                    max="3000"
-                    step="20"
-                    value={canvasSize.height}
-                    onChange={(e) => setCanvasSize((s) => ({ ...s, height: Math.max(150, Number(e.target.value)) }))}
-                  />
-                </label>
-                <label>
-                  Width (cm)
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={Number((canvasSize.width / PX_PER_CM).toFixed(1))}
-                    onChange={(e) => setCanvasSize((s) => ({ ...s, width: Math.round(Number(e.target.value) * PX_PER_CM) }))}
-                  />
-                </label>
-                <label>
-                  Height (cm)
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={Number((canvasSize.height / PX_PER_CM).toFixed(1))}
-                    onChange={(e) => setCanvasSize((s) => ({ ...s, height: Math.round(Number(e.target.value) * PX_PER_CM) }))}
-                  />
-                </label>
-              </div>
-              <div className="button-group" style={{ marginTop: "12px" }}>
-                <button onClick={() => alignToCanvas("h")}>Center Horizontally</button>
-                <button onClick={() => alignToCanvas("v")}>Center Vertically</button>
-                <button onClick={() => setSelected(nodes.map((n) => n.id))}>Select All (⌘A)</button>
-              </div>
-            </div>
-          )}
-        </aside>
-      </div>
-      <section
-        className="bottom-panel"
-        aria-label="Source, history, and assistant"
-      >
-        <div className="bottom-tabs">
-          {(["source", "history", "assistant"] as Tab[]).map((name) => (
-            <button
-              key={name}
-              disabled={!desktop && name !== "source"}
-              title={!desktop && name !== "source" ? `${name} is available on desktop` : undefined}
-              className={tab === name ? "active" : ""}
-              onClick={() => {
-                setTab(name);
-                if (name === "history" && project)
-                  void listHistory(project.handle).then(setCommits);
-              }}
-            >
-              {name === "source"
-                ? "Source"
-                : name === "history"
-                  ? `History · ${commits.length}`
-                  : "Assistant"}
-            </button>
-          ))}
-        </div>
-        {tab === "source" ? (
-          <SourceTab
-            doc={doc}
-            onApplySource={(newDoc) => {
-              flushCheckpoint();
-              setHistory(createHistory(newDoc));
-              persist(newDoc);
-              setSelected([]);
-            }}
-            onCopyTikz={copyTikz}
-            onNotice={setNotice}
-          />
-        ) : tab === "history" ? (
-          <div className="history-list">
-            {commits.map((commit) => (
-              <div key={commit.id} className="history-item">
-                <span>{commit.message}</span>
-                <button
-                  onClick={() =>
-                    project &&
-                    void restoreCommit(project.handle, commit.id).then(
-                      (restored) => {
-                        if (!restored) return;
-                        const parsed = parseTikz(restored.source);
-                        if (!parsed.errors.length) {
-                          setHistory(createHistory(parsed.document));
-                          persist(parsed.document);
-                          setNotice("Restored history");
-                        }
-                      },
-                    )
-                  }
-                >
-                  Restore
-                </button>
-              </div>
-            ))}
-            {!commits.length && <p className="empty">No saved history yet.</p>}
-          </div>
-        ) : (
-          <AssistantTab
-            doc={doc}
-            selected={selected}
-            suggestion={suggestion}
-            setSuggestion={setSuggestion}
-            onApplyOperations={(label, ops) => {
-              flushCheckpoint();
-              transact(label, ops);
-            }}
-            onNotice={setNotice}
-          />
+        {rightDockPanels.length > 0 && (
+          <aside
+            className={`dock dock-right ${dragOverDock === "right" ? "drag-over" : ""}`}
+            aria-label="Right panels"
+            {...dockDragHandlers("right")}
+          >
+            {rightDockPanels.map((id) =>
+              panelWindow(id, renderPanelBody(id)),
+            )}
+          </aside>
         )}
-      </section>
+      </div>
+      {bottomDockPanels.length > 0 && (
+        <section
+          className={`dock dock-bottom ${dragOverDock === "bottom" ? "drag-over" : ""}`}
+          aria-label="Source, history, and assistant"
+          {...dockDragHandlers("bottom")}
+        >
+          <div className="bottom-tabs">
+            {bottomDockPanels.map((name) => {
+              const label = name === "history" ? `History · ${commits.length}` : panelTitles[name];
+              return (
+                <button
+                  key={name}
+                  draggable
+                  title="Drag to move panel to the left or right side"
+                  disabled={!desktop && name !== "source"}
+                  className={activeBottom === name ? "active" : ""}
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData("application/x-figureit-panel", name);
+                    event.dataTransfer.effectAllowed = "move";
+                    setDraggingPanel(name);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingPanel(null);
+                    setDragOverDock(null);
+                  }}
+                  onClick={() => {
+                    setActiveBottomTab(name);
+                    if (name === "history" && project?.handle)
+                      void listHistory(project.handle).then(setCommits);
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="bottom-body">
+            {renderPanelBody(activeBottom)}
+          </div>
+        </section>
+      )}
     </main>
   );
 }

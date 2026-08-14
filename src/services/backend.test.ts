@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { compileProject, createProject, desktopFeaturesAvailable, openProject, saveProject, writeAsset } from './backend'
+import { claudeLogin, claudeStatus, compileProject, createProject, desktopFeaturesAvailable, openProject, saveProject, writeAsset } from './backend'
 
 describe('backend fallback', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -26,5 +26,10 @@ describe('backend fallback', () => {
     expect(desktopFeaturesAvailable()).toBe(false)
     expect((await openProject()).source).toBe(edited)
     expect(await compileProject(project.handle)).toEqual({ status: 'unavailable', message: 'Tectonic is unavailable' })
+  })
+
+  it('reports Claude as unavailable without a desktop backend', async () => {
+    expect(await claudeStatus()).toEqual({ status: 'not_installed' })
+    expect(await claudeLogin()).toBe(false)
   })
 })

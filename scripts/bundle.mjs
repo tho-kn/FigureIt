@@ -26,6 +26,13 @@ export function bundle() {
     if (process.platform !== 'win32') env.RUSTFLAGS = `${env.RUSTFLAGS ? `${env.RUSTFLAGS} ` : ''}--remap-path-prefix=${root}=/figureit --remap-path-prefix=${process.env.HOME ?? root}=/build`
     const result = spawnSync(process.execPath, [join(root, 'scripts', 'tauri.mjs'), 'build', '--config', config], { cwd: root, env, stdio: 'inherit' })
     if (result.status !== 0) throw new Error(`FigureIt bundle failed (${result.status ?? 'signal'}).`)
+    if (process.platform === 'darwin') {
+      const app = join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'FigureIt.app')
+      const signed = spawnSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' })
+      if (signed.status !== 0) throw new Error(`FigureIt ad-hoc signing failed (${signed.status ?? 'signal'}).`)
+      const verified = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' })
+      if (verified.status !== 0) throw new Error(`FigureIt bundle verification failed (${verified.status ?? 'signal'}).`)
+    }
     console.log(`Bundled FigureIt with ${basename(source)}.`)
   } finally {
     rmSync(temporary, { recursive: true, force: true })

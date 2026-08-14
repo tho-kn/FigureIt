@@ -18,7 +18,7 @@ use thiserror::Error;
 
 const SOURCE: &str = "figure.tikz";
 const COMPILE_SOURCE: &str = "figureit.tex";
-const COMPILE_WRAPPER: &str = "\\documentclass{standalone}\n\\usepackage{tikz}\n\\usepackage{amsmath,amssymb}\n\\usepackage{ulem}\n\\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, shadings}\n\\begin{document}\n\\input{figure.tikz}\n\\end{document}\n";
+const COMPILE_WRAPPER: &str = "\\documentclass{standalone}\n\\usepackage{tikz}\n\\usepackage{amsmath,amssymb}\n\\usepackage{ulem}\n\\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, shadings, patterns, decorations.pathreplacing, decorations.markings, fit, backgrounds, angles, quotes, arrows, intersections}\n\\begin{document}\n\\input{figure.tikz}\n\\end{document}\n";
 const ASSETS: &str = "assets";
 const MAX_SOURCE_BYTES: usize = 1_000_000;
 const MAX_REQUEST_BYTES: usize = 100_000;
@@ -37,7 +37,7 @@ const CLAUDE_STREAM_FLAGS: &[&str] = &[
     "--strict-mcp-config",
     "--mcp-config",
 ];
-const CLAUDE_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["summary","operations"],"properties":{"summary":{"type":"string","maxLength":1000},"operations":{"type":"array","maxItems":32,"items":{"oneOf":[{"type":"object","additionalProperties":false,"required":["type","id","dx","dy"],"properties":{"type":{"const":"move"},"id":{"type":"string","maxLength":160},"dx":{"type":"number"},"dy":{"type":"number"}}},{"type":"object","additionalProperties":false,"required":["type","id","transform"],"properties":{"type":{"const":"transform"},"id":{"type":"string","maxLength":160},"transform":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"rotate":{"type":"number"},"xScale":{"type":"number"},"yScale":{"type":"number"},"translate":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number"},"y":{"type":"number"}}}}}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"const":"set_metadata"},"id":{"type":"string","maxLength":160},"name":{"type":"string","maxLength":160},"visible":{"type":"boolean"},"locked":{"type":"boolean"}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"const":"update_properties"},"id":{"type":"string","maxLength":160},"geometry":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number"},"height":{"type":"number"}}},"style":{"type":"object","additionalProperties":false,"properties":{"fill":{"type":"string","maxLength":80},"stroke":{"type":"string","maxLength":80},"strokeWidth":{"type":"number"},"opacity":{"type":"number","minimum":0,"maximum":1}}},"text":{"type":"string","maxLength":10000},"transform":{"type":"object","additionalProperties":false,"properties":{"rotate":{"type":"number"},"xScale":{"type":"number"},"yScale":{"type":"number"},"translate":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number"},"y":{"type":"number"}}}}}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"enum":["delete","ungroup"]},"id":{"type":"string","maxLength":160}}},{"type":"object","additionalProperties":false,"required":["type","id","index"],"properties":{"type":{"const":"reorder"},"id":{"type":"string","maxLength":160},"parentId":{"type":"string","maxLength":160},"index":{"type":"integer","minimum":0,"maximum":10000}}},{"type":"object","additionalProperties":false,"required":["type","childIds"],"properties":{"type":{"const":"group"},"id":{"type":"string","maxLength":160},"parentId":{"type":"string","maxLength":160},"name":{"type":"string","maxLength":160},"childIds":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"string","maxLength":160}}}}]}}}}"#;
+const CLAUDE_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["summary","operations"],"properties":{"summary":{"type":"string","maxLength":1000},"operations":{"type":"array","maxItems":32,"items":{"oneOf":[{"type":"object","additionalProperties":false,"required":["type","id","dx","dy"],"properties":{"type":{"const":"move"},"id":{"type":"string","maxLength":160},"dx":{"type":"number"},"dy":{"type":"number"}}},{"type":"object","additionalProperties":false,"required":["type","id","transform"],"properties":{"type":{"const":"transform"},"id":{"type":"string","maxLength":160},"transform":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"rotate":{"type":"number"},"xScale":{"type":"number"},"yScale":{"type":"number"},"translate":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number"},"y":{"type":"number"}}}}}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"const":"set_metadata"},"id":{"type":"string","maxLength":160},"name":{"type":"string","maxLength":160},"visible":{"type":"boolean"},"locked":{"type":"boolean"}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"const":"update_properties"},"id":{"type":"string","maxLength":160},"geometry":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number"},"height":{"type":"number"}}},"style":{"type":"object","additionalProperties":false,"properties":{"fill":{"type":"string","maxLength":80},"stroke":{"type":"string","maxLength":80},"strokeWidth":{"type":"number"},"opacity":{"type":"number","minimum":0,"maximum":1}}},"text":{"type":"string","maxLength":10000},"transform":{"type":"object","additionalProperties":false,"properties":{"rotate":{"type":"number"},"xScale":{"type":"number"},"yScale":{"type":"number"},"translate":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number"},"y":{"type":"number"}}}}}}},{"type":"object","additionalProperties":false,"required":["type","id"],"properties":{"type":{"enum":["delete","ungroup"]},"id":{"type":"string","maxLength":160}}},{"type":"object","additionalProperties":false,"required":["type","id","index"],"properties":{"type":{"const":"reorder"},"id":{"type":"string","maxLength":160},"parentId":{"type":"string","maxLength":160},"index":{"type":"integer","minimum":0,"maximum":10000}}},{"type":"object","additionalProperties":false,"required":["type","childIds"],"properties":{"type":{"const":"group"},"id":{"type":"string","maxLength":160},"parentId":{"type":"string","maxLength":160},"name":{"type":"string","maxLength":160},"childIds":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"string","maxLength":160}}}},{"type":"object","additionalProperties":false,"required":["type","node"],"properties":{"type":{"const":"insert"},"parentId":{"type":"string","maxLength":160},"node":{"type":"object","additionalProperties":false,"required":["id","kind","geometry"],"properties":{"id":{"type":"string","maxLength":160},"kind":{"enum":["rect","roundrect","ellipse","triangle","diamond","line","path","text","math"]},"name":{"type":"string","maxLength":160},"visible":{"type":"boolean"},"locked":{"type":"boolean"},"geometry":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number","minimum":0.01},"height":{"type":"number","minimum":0.01},"points":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number"},"y":{"type":"number"}}}}}},"style":{"type":"object","additionalProperties":false,"properties":{"fill":{"type":"string","maxLength":80},"stroke":{"type":"string","maxLength":80},"strokeWidth":{"type":"number"},"opacity":{"type":"number","minimum":0,"maximum":1}}},"text":{"type":"string","maxLength":10000}}}}}]}}}}"#;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error, Serialize)]
@@ -127,7 +127,10 @@ impl Drop for ClaudeConversation {
 }
 
 #[derive(Default)]
-struct ClaudeStore(Mutex<Option<(String, ClaudeConversation)>>);
+struct ClaudeStore {
+    conversation: Mutex<Option<(String, ClaudeConversation)>>,
+    login: Mutex<Option<Child>>,
+}
 
 impl ProjectStore {
     #[cfg(desktop)]
@@ -422,6 +425,92 @@ fn valid_claude_operation(value: &Value) -> bool {
                     .and_then(Value::as_array)
                     .is_some_and(|ids| {
                         ids.len() >= 2 && ids.len() <= 64 && ids.iter().all(|id| valid_id(Some(id)))
+                    })
+        }
+        "insert" => {
+            has_only_keys(object, &["type", "parentId", "node"])
+                && optional(object.get("parentId"), |value| valid_id(Some(value)))
+                && object
+                    .get("node")
+                    .and_then(Value::as_object)
+                    .is_some_and(|node| {
+                        has_only_keys(
+                            node,
+                            &[
+                                "id", "kind", "name", "visible", "locked", "geometry", "style",
+                                "text",
+                            ],
+                        ) && valid_id(node.get("id"))
+                            && node
+                                .get("kind")
+                                .and_then(Value::as_str)
+                                .is_some_and(|kind| {
+                                    matches!(
+                                        kind,
+                                        "rect"
+                                            | "roundrect"
+                                            | "ellipse"
+                                            | "triangle"
+                                            | "diamond"
+                                            | "line"
+                                            | "path"
+                                            | "text"
+                                            | "math"
+                                    )
+                                })
+                            && optional(node.get("name"), |value| {
+                                value.as_str().is_some_and(|name| name.len() <= 160)
+                            })
+                            && optional(node.get("visible"), Value::is_boolean)
+                            && optional(node.get("locked"), Value::is_boolean)
+                            && optional(node.get("text"), |value| {
+                                value.as_str().is_some_and(|text| text.len() <= 10_000)
+                            })
+                            && node.get("geometry").and_then(Value::as_object).is_some_and(
+                                |geometry| {
+                                    has_only_keys(
+                                        geometry,
+                                        &["x", "y", "width", "height", "points"],
+                                    ) && !geometry.is_empty()
+                                        && geometry.iter().all(|(key, value)| match key.as_str() {
+                                            "points" => value.as_array().is_some_and(|points| {
+                                                points.len() >= 2
+                                                    && points.len() <= 64
+                                                    && points.iter().all(|point| {
+                                                        point.as_object().is_some_and(|p| {
+                                                            has_only_keys(p, &["x", "y"])
+                                                                && valid_number(p.get("x"))
+                                                                && valid_number(p.get("y"))
+                                                        })
+                                                    })
+                                            }),
+                                            "width" | "height" => {
+                                                value.as_f64().is_some_and(|number| {
+                                                    number.is_finite() && number > 0.0
+                                                })
+                                            }
+                                            _ => valid_number(Some(value)),
+                                        })
+                                },
+                            )
+                            && optional(node.get("style"), |value| {
+                                value.as_object().is_some_and(|style| {
+                                    has_only_keys(
+                                        style,
+                                        &["fill", "stroke", "strokeWidth", "opacity"],
+                                    ) && optional(style.get("fill"), |value| {
+                                        value.as_str().is_some_and(|text| text.len() <= 80)
+                                    }) && optional(style.get("stroke"), |value| {
+                                        value.as_str().is_some_and(|text| text.len() <= 80)
+                                    }) && optional(style.get("strokeWidth"), |value| {
+                                        valid_number(Some(value))
+                                    }) && optional(style.get("opacity"), |value| {
+                                        value
+                                            .as_f64()
+                                            .is_some_and(|opacity| (0.0..=1.0).contains(&opacity))
+                                    })
+                                })
+                            })
                     })
         }
         _ => false,
@@ -871,7 +960,10 @@ fn ask_claude(
                 NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
             )
         });
-    let mut stored = store.0.lock().map_err(|_| BackendError::OperationFailed)?;
+    let mut stored = store
+        .conversation
+        .lock()
+        .map_err(|_| BackendError::OperationFailed)?;
     if stored.as_ref().is_some_and(|(active, _)| active != &handle) {
         return Ok(ClaudeResult::Unavailable {
             message: "Claude is unavailable".into(),
@@ -914,8 +1006,145 @@ fn ask_claude(
 
 #[tauri::command]
 fn reset_claude(store: State<'_, ClaudeStore>) -> Result<(), BackendError> {
-    *store.0.lock().map_err(|_| BackendError::OperationFailed)? = None;
+    *store
+        .conversation
+        .lock()
+        .map_err(|_| BackendError::OperationFailed)? = None;
     Ok(())
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ClaudeStatus {
+    Ready { method: String },
+    NotInstalled,
+    NotLoggedIn,
+}
+
+fn claude_binary_present() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn claude_env_credential_present() -> bool {
+    [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+fn claude_auth_status_ok() -> bool {
+    Command::new("claude")
+        .args(["auth", "status"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn credentials_json_looks_valid(contents: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(contents) else {
+        return false;
+    };
+    value.as_object().is_some_and(|object| {
+        object.iter().any(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "oauthAccount" | "claudeAiOauth" | "primaryApiKey" | "apiKey"
+            ) && !value.is_null()
+        })
+    })
+}
+
+fn claude_credentials_file() -> Option<PathBuf> {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let home = if cfg!(target_os = "windows") {
+                std::env::var_os("USERPROFILE")
+            } else {
+                std::env::var_os("HOME")
+            };
+            home.map(|home| PathBuf::from(home).join(".claude"))
+        })?;
+    Some(dir.join(".credentials.json"))
+}
+
+fn claude_credentials_file_looks_valid() -> bool {
+    claude_credentials_file()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|contents| credentials_json_looks_valid(&contents))
+}
+
+fn reap_finished_login(store: &ClaudeStore) {
+    let Ok(mut slot) = store.login.lock() else {
+        return;
+    };
+    if let Some(mut child) = slot.take() {
+        if let Ok(None) = child.try_wait() {
+            *slot = Some(child); // still running; keep the handle
+        }
+    }
+}
+
+#[tauri::command]
+fn claude_status(store: State<'_, ClaudeStore>) -> ClaudeStatus {
+    reap_finished_login(&store);
+    if !claude_binary_present() {
+        return ClaudeStatus::NotInstalled;
+    }
+    if claude_env_credential_present() {
+        return ClaudeStatus::Ready {
+            method: "env_key".into(),
+        };
+    }
+    if claude_auth_status_ok() {
+        return ClaudeStatus::Ready {
+            method: "oauth".into(),
+        };
+    }
+    if claude_credentials_file_looks_valid() {
+        return ClaudeStatus::Ready {
+            method: "oauth".into(),
+        };
+    }
+    ClaudeStatus::NotLoggedIn
+}
+
+#[tauri::command]
+fn claude_login(store: State<'_, ClaudeStore>) -> Result<bool, BackendError> {
+    let mut slot = store
+        .login
+        .lock()
+        .map_err(|_| BackendError::OperationFailed)?;
+    if let Some(mut previous) = slot.take() {
+        let _ = previous.kill();
+        let _ = previous.wait();
+    }
+    match Command::new("claude")
+        .arg("login")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            *slot = Some(child);
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -934,7 +1163,9 @@ pub fn run() {
             restore_commit,
             compile_project,
             ask_claude,
-            reset_claude
+            reset_claude,
+            claude_status,
+            claude_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
@@ -1017,7 +1248,9 @@ mod tests {
         assert!(serde_json::from_str::<Value>(CLAUDE_SCHEMA).is_ok());
         assert!(CLAUDE_SCHEMA.contains("additionalProperties"));
         assert!(!CLAUDE_SCHEMA.contains("replace_source"));
-        assert!(!CLAUDE_SCHEMA.contains("insert"));
+        assert!(CLAUDE_SCHEMA.contains("\"insert\""));
+        assert!(!CLAUDE_SCHEMA.contains("\"type\":\"insert\""));
+        assert!(CLAUDE_SCHEMA.contains("\"points\""));
     }
 
     #[cfg(unix)]
@@ -1046,6 +1279,43 @@ mod tests {
             .status()
             .expect("process check")
             .success());
+    }
+
+    #[test]
+    fn claude_credential_detection_is_bounded() {
+        assert!(credentials_json_looks_valid(
+            r#"{"oauthAccount":{"id":"a"}}"#
+        ));
+        assert!(credentials_json_looks_valid(
+            r#"{"primaryApiKey":"configured"}"#
+        ));
+        assert!(credentials_json_looks_valid(
+            r#"{"claudeAiOauth":{"tokens":{}}}"#
+        ));
+        assert!(!credentials_json_looks_valid("{}"));
+        assert!(!credentials_json_looks_valid("not json"));
+        assert!(!credentials_json_looks_valid(r#"{"oauthAccount":null}"#));
+    }
+
+    #[test]
+    fn claude_insert_operations_are_validated() {
+        let insert = serde_json::json!({"type":"insert","node":{"id":"n1","kind":"rect","geometry":{"x":0,"y":0,"width":3,"height":2},"style":{"fill":"#90baff"}}});
+        assert!(valid_claude_operation(&insert));
+        let text = serde_json::json!({"type":"insert","node":{"id":"n2","kind":"text","geometry":{"x":1,"y":1},"text":"Hi"}});
+        assert!(valid_claude_operation(&text));
+        let line = serde_json::json!({"type":"insert","node":{"id":"n3","kind":"line","geometry":{"points":[{"x":0,"y":0},{"x":2,"y":1}]}}});
+        assert!(valid_claude_operation(&line));
+        let bad_kind = serde_json::json!({"type":"insert","node":{"id":"n4","kind":"raw","geometry":{"x":0,"y":0}}});
+        assert!(!valid_claude_operation(&bad_kind));
+        let missing_geometry =
+            serde_json::json!({"type":"insert","node":{"id":"n5","kind":"rect"}});
+        assert!(!valid_claude_operation(&missing_geometry));
+        let single_point = serde_json::json!({"type":"insert","node":{"id":"n6","kind":"line","geometry":{"points":[{"x":0,"y":0}]}}});
+        assert!(!valid_claude_operation(&single_point));
+        let zero_width = serde_json::json!({"type":"insert","node":{"id":"n7","kind":"rect","geometry":{"x":0,"y":0,"width":0,"height":2}}});
+        assert!(!valid_claude_operation(&zero_width));
+        let long_parent = serde_json::json!({"type":"insert","parentId":"p".repeat(200),"node":{"id":"n8","kind":"rect","geometry":{"x":0,"y":0,"width":1,"height":1}}});
+        assert!(!valid_claude_operation(&long_parent));
     }
 
     #[test]

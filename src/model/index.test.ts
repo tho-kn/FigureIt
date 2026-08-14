@@ -51,6 +51,23 @@ describe('TikZ scene document', () => {
     expect(parseTikz(serializeDocument(named)).document.nodes[0].name).toBe('Primary rectangle')
   })
 
+  it('round trips a dimension annotation with a length label', () => {
+    const source = String.raw`\begin{tikzpicture}
+% figureit: id=dim-1 name=Dimension visible=true locked=false kind=dimension
+\draw[|-|,draw=black,line width=0.03cm] (1,1) -- (4.5,1) node[pos=0.5, above, font=\scriptsize, inner sep=1.5pt] {3.5 cm};
+\end{tikzpicture}`
+    const parsed = parseTikz(source)
+    expect(parsed.errors).toEqual([])
+    const document = parsed.document
+    expect(document.nodes[0]).toMatchObject({ id: 'dim-1', kind: 'dimension', text: '3.5 cm' })
+    const serialized = serializeDocument(document)
+    expect(serialized).toContain('|-|')
+    const reparsed = parseTikz(serialized).document
+    expect(reparsed.nodes[0].kind).toBe('dimension')
+    expect(reparsed.nodes[0].text).toBe('3.5 cm')
+    expect(reparsed.nodes[0].geometry?.points).toHaveLength(2)
+  })
+
   it('round trips generated source and has path-free Claude context', () => {
     const document = createDefaultDocument()
     const reparsed = parseTikz(serializeDocument(document)).document

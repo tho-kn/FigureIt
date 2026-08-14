@@ -14,7 +14,7 @@ export type SceneTextStyle = {
 export type SceneStyle = { stroke?: string; fill?: string; gradient?: SceneGradient; strokeWidth?: number; opacity?: number; dash?: string; arrow?: string; textStyle?: SceneTextStyle }
 export type ImageProperties = { href: string; width?: number; height?: number }
 export const PX_PER_CM = 37.7952755906
-export type NodeKind = 'group' | 'rect' | 'roundrect' | 'ellipse' | 'triangle' | 'diamond' | 'line' | 'path' | 'text' | 'math' | 'connector' | 'image' | 'raw'
+export type NodeKind = 'group' | 'rect' | 'roundrect' | 'ellipse' | 'triangle' | 'diamond' | 'line' | 'path' | 'text' | 'math' | 'connector' | 'image' | 'dimension' | 'raw'
 export type ConnectorAnchor = 'top-left' | 'top' | 'top-right' | 'right' | 'bottom-right' | 'bottom' | 'bottom-left' | 'left'
 export type ConnectorBinding = { nodeId: string; anchor: ConnectorAnchor }
 export type ConnectorBindings = { start?: ConnectorBinding; end?: ConnectorBinding; routing?: 'straight' | 'elbow' | 'curved' }
@@ -66,7 +66,7 @@ export const DEFAULT_TIKZ_SOURCE = String.raw`\begin{tikzpicture}
 `
 
 type Metadata = Pick<SceneNode, 'id' | 'name' | 'visible' | 'locked' | 'kind' | 'bindings' | 'style'> & { transform?: Transform }
-const nodeKinds: NodeKind[] = ['group', 'rect', 'roundrect', 'ellipse', 'triangle', 'diamond', 'line', 'path', 'text', 'math', 'connector', 'image', 'raw']
+const nodeKinds: NodeKind[] = ['group', 'rect', 'roundrect', 'ellipse', 'triangle', 'diamond', 'line', 'path', 'text', 'math', 'connector', 'image', 'dimension', 'raw']
 export const anchors: ConnectorAnchor[] = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left']
 const bindingFrom = (value?: string): ConnectorBinding | undefined => {
   if (!value) return undefined
@@ -178,7 +178,7 @@ const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometr
   let geometry: SceneGeometry | undefined = ['rect', 'roundrect'].includes(kind) && points.length >= 2 ? { x: points[0].x, y: points[0].y, width: points[1].x - points[0].x, height: points[1].y - points[0].y }
       : kind === 'ellipse' && points.length >= 1 ? (() => { const radii = source.match(/ellipse\s*\(([-.\d]+)\s*and\s*([-.\d]+)\)/); if (!radii) return { x: points[0].x, y: points[0].y }; const rx = Number(radii[1]); const ry = Number(radii[2]); return { x: points[0].x - rx, y: points[0].y - ry, width: rx * 2, height: ry * 2 } })()
       : ['triangle', 'diamond'].includes(kind) && bounds ? bounds
-      : ['line', 'path', 'connector'].includes(kind) ? { points } : ['text', 'math', 'image'].includes(kind) && points[0] ? { x: points[0].x, y: points[0].y } : undefined
+      : ['line', 'path', 'connector', 'dimension'].includes(kind) ? { points } : ['text', 'math', 'image'].includes(kind) && points[0] ? { x: points[0].x, y: points[0].y } : undefined
   const content = source.match(/\{([^{}]*)\}\s*;?\s*(?:%.*)?$/)?.[1]
   const nodeLabel = source.match(/node(?:\s*\[[^\]]*\])?\s*\{([^{}]*)\}/)?.[1]
   const text = (kind === 'text' || kind === 'math') ? content : nodeLabel
@@ -298,6 +298,12 @@ const generatedSource = (node: SceneNode): string | undefined => {
   if (node.kind === 'triangle' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y)}) -- cycle${textSuffix};`
   if (node.kind === 'diamond' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height / 2)}) -- (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y + geometry.height / 2)}) -- cycle${textSuffix};`
   const points = geometry.points
+  if (node.kind === 'dimension' && points && points.length >= 2) {
+    const opts = inlineOptions(node)
+    const head = opts ? `[|-|,${opts.slice(1, -1)}]` : '[|-|]'
+    const label = node.text ? ` node[pos=0.5, above, font=\\scriptsize, inner sep=1.5pt] {${formatTikzText(node.text, node.style?.textStyle)}}` : ''
+    return `\\draw${head} ${points.map(coordinate).join(' -- ')}${label};`
+  }
   if (['line', 'path', 'connector'].includes(node.kind) && points && points.length >= 2) {
     const routing = node.bindings?.routing
     if (routing === 'elbow') {

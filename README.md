@@ -11,12 +11,13 @@ FigureIt is a privacy-conscious desktop editor for TikZ figures. It combines dir
 - **Smart Orthogonal & Curved Connectors**: Shape-to-shape connectors with magnetic snap sites, persistent bindings, straight/elbow (`-|`, `|-`)/curved Bézier routing, waypoint management, and arrow ends.
 - **Universal Shape Line Patterns**: Solid, dashed (`---`), and dotted (`···`) border strokes on all primitive shapes as well as lines and connectors.
 - **In-Place Live Text Editing & Multi-Line Typography**: Double-click any shape or text box to edit text in-place without ghosting; multi-line text with `\\` and `align=center|left|right`; rich typography toolbar for font family (Modern Sans, LaTeX Serif, Monospace Code), font size ($6\dots96\text{pt}$), bold (`\textbf`), italic (`\textit`), strikethrough (`\sout`), math mode (`$...$`), and horizontal/vertical alignments.
-- **Standalone `.tex` Save & Open**: Dedicated **Save .tex** button (`Cmd+S`) to export and re-edit diagrams directly; instant non-blocking file picker (`Cmd+O`) and canvas drag-and-drop for `.tex`, `.tikz`, and `.latex` files.
-- **Custom Artboard Sizing**: Standard presets (16:9, IEEE column, Square, Banner) plus direct manual pixel width and height inputs with live centimeter readouts.
+- **Project and standalone `.tex` workflows**: **Open project** restores a FigureIt folder with its local Git history, while **Open .tex** and canvas drag-and-drop import `.tex`, `.tikz`, and `.latex` files without fabricating a project. `Cmd+O` opens a project on desktop and a standalone file on browser/mobile; `Cmd+S` exports the current source.
+- **Custom Artboard Sizing**: Standard presets (16:9, IEEE column, Square, Banner) plus direct manual pixel width and height inputs with live centimeter readouts and a **Fit width (cm)** control that scales the whole figure to a paper column width.
+- **Academic Figure Extras**: Dimension annotations (`|-|` measure lines with editable length labels), PNG export at 300/600 dpi for journals that require raster, and a compile wrapper that loads the TikZ libraries papers rely on (`patterns`, `decorations.pathreplacing`, `decorations.markings`, `fit`, `backgrounds`, `angles`, `quotes`, `arrows`, `intersections`).
 - **Layer & Multi-Selection Tools**: Marquee selection, collective proportional resize and rotation, layer tree with grouping, visibility, reversible locking, reordering, duplication, opacity, fill/stroke palette, gradients, and align/distribute actions.
 - **Git Checkpoints & Undo/Redo**: Transactional undo/redo (`Cmd+Z` / `Cmd+Shift+Z`) plus automatic local Git checkpoints per figure project.
 - **Authoritative TikZ Source & Compilation**: Split TikZ source view with parse-before-apply behavior, SVG export, and authoritative zero-error vector PDF compilation with embedded Tectonic.
-- **Optional Claude Design Assistant**: Attached conversation that receives a sanitized scene snapshot and returns approval-gated scene operations.
+- **Optional Claude Design Assistant**: Attached conversation that receives a sanitized scene snapshot and returns approval-gated scene operations — including **inserting new shapes** — with an in-app auth check and **Log in to Claude** button that opens the `claude login` browser flow.
 - **Lossless Raw Statements**: Preserves unsupported TikZ macros and raw comments adjacent to supported objects.
 
 ## Privacy model
@@ -42,7 +43,7 @@ Requirements:
 
 - Node.js 24 and pnpm 10
 - Stable Rust and the platform prerequisites for Tauri 2
-- Optional: Claude Code installed and authenticated for Assistant
+- Optional: Claude Code installed and authenticated for Assistant (the Assistant tab checks this and offers a **Log in to Claude** button that opens the `claude login` browser flow)
 
 ```sh
 pnpm install
@@ -56,11 +57,11 @@ Desktop packaging targets macOS arm64/x64, Windows x64, and Linux x64. Install t
 
 ### Releases
 
-Push an existing semantic version tag such as `v0.2.0` to run the Release workflow. It validates the source, builds macOS arm64/x64, Windows x64, Linux x64, and an Android arm64 preview APK, writes SHA-256 checksums, and creates one draft GitHub Release for final inspection:
+Push an existing semantic version tag such as `v0.3.0` to run the Release workflow. It validates the source, builds macOS arm64/x64, Windows x64, Linux x64, and an Android arm64 preview APK, writes SHA-256 checksums, and creates one draft GitHub Release for final inspection:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 The workflow can also be started manually for an existing tag. Publishing the draft remains an explicit maintainer action. Desktop packages are currently unsigned and the Android asset is a debug-signed preview, so these assets are intended for testing until platform signing is configured.

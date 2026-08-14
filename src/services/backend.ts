@@ -9,6 +9,10 @@ export type CompileResult =
 export type ClaudeResult =
   | { status: 'ok'; text: string; operations: unknown }
   | { status: 'unavailable' | 'rejected'; message: string }
+export type ClaudeStatus =
+  | { status: 'ready'; method: string }
+  | { status: 'not_installed' }
+  | { status: 'not_logged_in' }
 
 const source = String.raw`\begin{tikzpicture}
 \end{tikzpicture}
@@ -98,6 +102,13 @@ export async function compileProject(handle: string): Promise<CompileResult> {
 export async function resetClaudeConversation(): Promise<void> {
   claudeConversation = undefined
   if (desktopFeaturesAvailable()) await call<void>('reset_claude')
+}
+export async function claudeStatus(): Promise<ClaudeStatus> {
+  return (await call<ClaudeStatus>('claude_status')) ?? { status: 'not_installed' }
+}
+export async function claudeLogin(): Promise<boolean> {
+  if (!desktopFeaturesAvailable()) return false
+  return (await call<boolean>('claude_login')) ?? false
 }
 export async function askClaude(scene: unknown, request: string): Promise<ClaudeResult> {
   if (!request || request.length > 100_000 || /(?:\/Users\/|\/home\/|\\\\|\0)/.test(request)) throw new Error('invalid_request')

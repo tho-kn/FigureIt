@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const backend = vi.hoisted(() => ({
   desktopFeaturesAvailable: () => true, createProject: vi.fn(async () => ({ handle: 'test', title: 'Diagram', source: String.raw`\begin{tikzpicture}
 \shade (0,0) circle (1);
-\end{tikzpicture}` })), openProject: vi.fn(), saveProject: vi.fn(async () => undefined), checkpointProject: vi.fn(async () => undefined), writeAsset: vi.fn(async () => undefined), listHistory: vi.fn(async () => []), restoreCommit: vi.fn(), compileProject: vi.fn(), askClaude: vi.fn(), resetClaudeConversation: vi.fn(async () => undefined),
+\end{tikzpicture}` })), openProject: vi.fn(), saveProject: vi.fn(async () => undefined), checkpointProject: vi.fn(async () => undefined), writeAsset: vi.fn(async () => undefined), listHistory: vi.fn(async () => []), restoreCommit: vi.fn(), compileProject: vi.fn(), askClaude: vi.fn(), resetClaudeConversation: vi.fn(async () => undefined), claudeStatus: vi.fn(async (): Promise<import('./services/backend').ClaudeStatus> => ({ status: 'ready', method: 'oauth' })), claudeLogin: vi.fn(async () => true),
 }))
 vi.mock('./services/backend', () => backend)
 import App from './App'
@@ -63,6 +63,53 @@ describe('FigureIt scene editor', () => {
     await user.upload(screen.getByLabelText('Image file'), file)
     expect(backend.writeAsset).toHaveBeenCalledWith('test', 'my-chart.png', expect.any(Uint8Array)); expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('includegraphics')
   })
+  it('adds a dimension annotation with a length label', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Dimension' }))
+    const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
+    expect(source).toContain('|-|')
+    expect(source).toContain('3.5 cm')
+  })
+
+  it('applies an assistant suggestion that inserts a new shape', async () => {
+    backend.askClaude.mockResolvedValueOnce({
+      status: 'ok',
+      text: 'Added a box.',
+      operations: [{ type: 'insert', node: { id: 'new-box', kind: 'rect', geometry: { x: 1, y: 1, width: 3, height: 2 }, style: { fill: '#90baff' } } }],
+    })
+    const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Assistant' }))
+    await user.type(screen.getByLabelText('Assistant request'), 'add a box')
+    await user.click(screen.getByRole('button', { name: 'Request suggestion' }))
+    expect(await screen.findByRole('button', { name: 'Apply suggestion' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Apply suggestion' }))
+    await user.click(screen.getByRole('button', { name: 'Source' }))
+    expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('rectangle')
+  })
+
+  it('scales the whole figure to a target column width', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    fireEvent.change(screen.getByLabelText('Fit width cm'), { target: { value: '8.8' } })
+    await user.click(screen.getByRole('button', { name: 'Fit' }))
+    expect(screen.getByLabelText<HTMLInputElement>('Canvas width').value).toBe('333')
+    const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
+    expect(source).not.toContain('(1.5,1.5) rectangle')
+  })
+
+  it('explains and starts Claude Code login when not authenticated', async () => {
+    backend.claudeStatus.mockResolvedValueOnce({ status: 'not_logged_in' })
+    const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Assistant' }))
+    expect(await screen.findByRole('button', { name: 'Log in to Claude' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Request suggestion' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Log in to Claude' }))
+    expect(backend.claudeLogin).toHaveBeenCalledOnce()
+    backend.claudeStatus.mockResolvedValueOnce({ status: 'ready', method: 'oauth' })
+    await user.click(screen.getByRole('button', { name: 'Re-check' }))
+    expect(await screen.findByText('● Claude Code connected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '🪄 Auto-Align & Tidy' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Log in to Claude' })).not.toBeInTheDocument()
+  })
+
   it('rejects malformed assistant operations before they can be applied', async () => {
     backend.askClaude.mockResolvedValueOnce({ status: 'ok', text: 'Move it right.', operations: [{ type: 'move', id: 'missing', dx: 'one', dy: 0 }] })
     const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Assistant' })); await user.type(screen.getByLabelText('Assistant request'), 'move it')
@@ -237,7 +284,78 @@ describe('FigureIt scene editor', () => {
     expect(screen.getByText('diagram.tex')).toBeInTheDocument()
     expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('Imported TeX')
   })
+
+  it('opens a desktop project separately from a standalone TeX file', async () => {
+    backend.openProject.mockResolvedValueOnce({
+      handle: 'opened-project',
+      title: 'Existing project',
+      source: String.raw`\begin{tikzpicture}
+\end{tikzpicture}`,
+    })
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Open project' }))
+    expect(backend.openProject).toHaveBeenCalledOnce()
+    expect(screen.getByText('Existing project')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open TeX file' })).toBeInTheDocument()
+  })
+
+  it('does not persist standalone TeX edits through a fabricated project handle', async () => {
+    backend.saveProject.mockClear()
+    const user = userEvent.setup(); render(<App />)
+    const file = new File([
+      String.raw`\begin{tikzpicture}
+\end{tikzpicture}`,
+    ], 'standalone.tex', { type: 'text/plain' })
+    await user.upload(screen.getByLabelText('TeX file'), file)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    expect(backend.saveProject).not.toHaveBeenCalled()
+    expect(screen.getByText('standalone.tex')).toBeInTheDocument()
+  })
+
+  it('shows tools as icon-only buttons with hover tooltips', async () => {
+    render(<App />)
+    const rect = screen.getByRole('button', { name: 'Rectangle' })
+    expect(rect.querySelector('svg')).not.toBeNull()
+    expect(rect.textContent?.trim()).toBe('')
+    expect(rect.getAttribute('data-tip')).toContain('Rectangle')
+    expect(rect.getAttribute('data-tip')).toContain('R')
+    expect(screen.getByRole('button', { name: 'Select' }).getAttribute('data-tip')).toContain('V')
+  })
+
+  it('offers a Photoshop-like options bar for the active tool', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    expect(screen.getByLabelText('Tool fill')).toBeInTheDocument()
+    expect(screen.getByLabelText('Tool stroke')).toBeInTheDocument()
+    expect(screen.getByLabelText<HTMLInputElement>('Tool fill color').value).toBe('#90baff')
+    fireEvent.change(screen.getByLabelText('Tool fill'), { target: { value: '#ff00aa' } })
+    expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('red,255;green,0;blue,170')
+  })
+
+  it('toggles panels from the Window menu and restores them', async () => {
+    const user = userEvent.setup(); render(<App />)
+    expect(screen.getByPlaceholderText('Filter layers...')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Window/ }))
+    await user.click(screen.getByRole('menuitemcheckbox', { name: /Layers/ }))
+    expect(screen.queryByPlaceholderText('Filter layers...')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitemcheckbox', { name: /Layers/ }))
+    expect(screen.getByPlaceholderText('Filter layers...')).toBeInTheDocument()
+  })
+
+  it('moves a panel between docks and collapses it', async () => {
+    const user = userEvent.setup(); render(<App />)
+    const store: Record<string, string> = {}
+    const dataTransfer = { setData: (type: string, value: string) => { store[type] = value }, getData: (type: string) => store[type] ?? '', effectAllowed: 'move', dropEffect: 'move' }
+    const assistantTab = screen.getByRole('button', { name: 'Assistant' })
+    const dockRight = screen.getByRole('complementary', { name: 'Right panels' })
+    fireEvent.dragStart(assistantTab, { dataTransfer })
+    fireEvent.dragOver(dockRight, { dataTransfer })
+    fireEvent.drop(dockRight, { dataTransfer })
+    expect(screen.getByRole('button', { name: 'Collapse Assistant panel' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Assistant' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Collapse Assistant panel' }))
+    expect(screen.getByRole('button', { name: 'Expand Assistant panel' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Request suggestion' })).not.toBeInTheDocument()
+  })
 })
-
-
 
