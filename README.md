@@ -6,15 +6,18 @@ FigureIt is a privacy-conscious desktop editor for TikZ figures. It combines dir
 
 ## What works
 
-- Native SVG artboard with drag, resize, rotate, endpoint reshaping, and numeric inspector controls
-- Rectangle, rounded rectangle, ellipse, triangle, diamond, text/math, image, line, arrow, path, and connector objects
-- Shape-to-shape connectors with eight snap sites, persistent bindings, straight/elbow/curved routing, arrow ends, and solid/dashed/dotted strokes
-- Layer tree with grouping, visibility, reversible locking, ordering, duplication, opacity, stroke/fill, gradients, alignment, and distribution
-- Transactional undo/redo plus automatic local Git checkpoints per figure project
-- Split TikZ source editing with parse-before-apply behavior
-- SVG export and authoritative PDF compilation with Tectonic
-- Optional attached Claude Code conversation that receives a sanitized scene snapshot and returns approval-gated scene operations
-- Lossless retention of unsupported TikZ statements adjacent to supported objects
+- **Direct Visual Canvas**: Native SVG artboard with live drag, resize, rotate, endpoint reshaping, smart alignment snapping, and numeric inspector controls.
+- **Rich Shapes & Primitives**: Rectangle, rounded rectangle, ellipse, triangle, diamond, text/math, image, line, arrow, pen path, and smart connectors.
+- **Smart Orthogonal & Curved Connectors**: Shape-to-shape connectors with magnetic snap sites, persistent bindings, straight/elbow (`-|`, `|-`)/curved Bézier routing, waypoint management, and arrow ends.
+- **Universal Shape Line Patterns**: Solid, dashed (`---`), and dotted (`···`) border strokes on all primitive shapes as well as lines and connectors.
+- **In-Place Live Text Editing & Multi-Line Typography**: Double-click any shape or text box to edit text in-place without ghosting; multi-line text with `\\` and `align=center|left|right`; rich typography toolbar for font family (Modern Sans, LaTeX Serif, Monospace Code), font size ($6\dots96\text{pt}$), bold (`\textbf`), italic (`\textit`), strikethrough (`\sout`), math mode (`$...$`), and horizontal/vertical alignments.
+- **Standalone `.tex` Save & Open**: Dedicated **Save .tex** button (`Cmd+S`) to export and re-edit diagrams directly; instant non-blocking file picker (`Cmd+O`) and canvas drag-and-drop for `.tex`, `.tikz`, and `.latex` files.
+- **Custom Artboard Sizing**: Standard presets (16:9, IEEE column, Square, Banner) plus direct manual pixel width and height inputs with live centimeter readouts.
+- **Layer & Multi-Selection Tools**: Marquee selection, collective proportional resize and rotation, layer tree with grouping, visibility, reversible locking, reordering, duplication, opacity, fill/stroke palette, gradients, and align/distribute actions.
+- **Git Checkpoints & Undo/Redo**: Transactional undo/redo (`Cmd+Z` / `Cmd+Shift+Z`) plus automatic local Git checkpoints per figure project.
+- **Authoritative TikZ Source & Compilation**: Split TikZ source view with parse-before-apply behavior, SVG export, and authoritative zero-error vector PDF compilation with embedded Tectonic.
+- **Optional Claude Design Assistant**: Attached conversation that receives a sanitized scene snapshot and returns approval-gated scene operations.
+- **Lossless Raw Statements**: Preserves unsupported TikZ macros and raw comments adjacent to supported objects.
 
 ## Privacy model
 
