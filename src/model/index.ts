@@ -271,11 +271,15 @@ const inlineOptions = (node: SceneNode) => {
 const coordinate = (point: ScenePoint) => `(${decimal(point.x)},${decimal(point.y)})`
 
 const formatTikzText = (rawText: string, ts?: SceneTextStyle) => {
-  let text = rawText.replace(/\n/g, ' \\\\ ')
-  if (ts?.strike) text = `\\sout{${text}}`
-  if (ts?.italic) text = `\\textit{${text}}`
-  if (ts?.bold) text = `\\textbf{${text}}`
-  return text
+  const lines = rawText.split('\n')
+  const formatted = lines.map((line) => {
+    let text = line
+    if (ts?.strike) text = `\\sout{${text}}`
+    if (ts?.italic) text = `\\textit{${text}}`
+    if (ts?.bold) text = `\\textbf{${text}}`
+    return text
+  })
+  return formatted.join(' \\\\ ')
 }
 
 const generatedSource = (node: SceneNode): string | undefined => {

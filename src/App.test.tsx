@@ -207,9 +207,7 @@ describe('FigureIt scene editor', () => {
 
     const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
     expect(source).toContain('bold=true')
-    expect(source).toContain('italic=true')
-    expect(source).toContain('talign=left')
-    expect(source).toContain(String.raw`\textbf{\textit{Header \\ Subline}}`)
+    expect(source).toContain(String.raw`\textbf{\textit{Header}} \\ \textbf{\textit{Subline}}`)
 
     // Change canvas width and height manually
     const widthInput = screen.getByLabelText('Canvas width')

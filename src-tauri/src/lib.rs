@@ -18,7 +18,7 @@ use thiserror::Error;
 
 const SOURCE: &str = "figure.tikz";
 const COMPILE_SOURCE: &str = "figureit.tex";
-const COMPILE_WRAPPER: &str = "\\documentclass{standalone}\n\\usepackage{tikz}\n\\begin{document}\n\\input{figure.tikz}\n\\end{document}\n";
+const COMPILE_WRAPPER: &str = "\\documentclass{standalone}\n\\usepackage{tikz}\n\\usepackage{amsmath,amssymb}\n\\usepackage{ulem}\n\\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, shadings}\n\\begin{document}\n\\input{figure.tikz}\n\\end{document}\n";
 const ASSETS: &str = "assets";
 const MAX_SOURCE_BYTES: usize = 1_000_000;
 const MAX_REQUEST_BYTES: usize = 100_000;
