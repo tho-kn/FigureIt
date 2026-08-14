@@ -2,7 +2,16 @@ export type Transform = { translate: { x: number; y: number }; rotate: number; x
 export type ScenePoint = { x: number; y: number }
 export type SceneGeometry = { x?: number; y?: number; width?: number; height?: number; points?: ScenePoint[] }
 export type SceneGradient = { start: string; end: string; angle: number }
-export type SceneStyle = { stroke?: string; fill?: string; gradient?: SceneGradient; strokeWidth?: number; opacity?: number; dash?: string; arrow?: string }
+export type SceneTextStyle = {
+  fontFamily?: 'sans' | 'serif' | 'mono'
+  fontSize?: number
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  align?: 'left' | 'center' | 'right'
+  valign?: 'top' | 'middle' | 'bottom'
+}
+export type SceneStyle = { stroke?: string; fill?: string; gradient?: SceneGradient; strokeWidth?: number; opacity?: number; dash?: string; arrow?: string; textStyle?: SceneTextStyle }
 export type ImageProperties = { href: string; width?: number; height?: number }
 export const PX_PER_CM = 37.7952755906
 export type NodeKind = 'group' | 'rect' | 'roundrect' | 'ellipse' | 'triangle' | 'diamond' | 'line' | 'path' | 'text' | 'math' | 'connector' | 'image' | 'raw'
@@ -56,9 +65,9 @@ export const DEFAULT_TIKZ_SOURCE = String.raw`\begin{tikzpicture}
 \end{tikzpicture}
 `
 
-type Metadata = Pick<SceneNode, 'id' | 'name' | 'visible' | 'locked' | 'kind' | 'bindings'> & { transform?: Transform }
+type Metadata = Pick<SceneNode, 'id' | 'name' | 'visible' | 'locked' | 'kind' | 'bindings' | 'style'> & { transform?: Transform }
 const nodeKinds: NodeKind[] = ['group', 'rect', 'roundrect', 'ellipse', 'triangle', 'diamond', 'line', 'path', 'text', 'math', 'connector', 'image', 'raw']
-const anchors: ConnectorAnchor[] = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left']
+export const anchors: ConnectorAnchor[] = ['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left']
 const bindingFrom = (value?: string): ConnectorBinding | undefined => {
   if (!value) return undefined
   const [nodeId, anchor] = decodeURIComponent(value).split('@')
@@ -73,13 +82,37 @@ const metadataFrom = (line: string): Metadata | undefined => {
   const kind = nodeKinds.includes(values.kind as NodeKind) ? values.kind as NodeKind : 'raw'
   const start = bindingFrom(values.start); const end = bindingFrom(values.end)
   const routing = ['straight', 'elbow', 'curved'].includes(values.routing) ? values.routing as ConnectorBindings['routing'] : undefined
+  const textStyle: SceneTextStyle = {
+    fontFamily: ['sans', 'serif', 'mono'].includes(values.font) ? values.font as SceneTextStyle['fontFamily'] : undefined,
+    fontSize: values.fsize ? Number(values.fsize) : undefined,
+    bold: values.bold === 'true' ? true : values.bold === 'false' ? false : undefined,
+    italic: values.italic === 'true' ? true : values.italic === 'false' ? false : undefined,
+    strike: values.strike === 'true' ? true : values.strike === 'false' ? false : undefined,
+    align: ['left', 'center', 'right'].includes(values.talign) ? values.talign as SceneTextStyle['align'] : undefined,
+    valign: ['top', 'middle', 'bottom'].includes(values.tvalign) ? values.tvalign as SceneTextStyle['valign'] : undefined,
+  }
+  const hasTextStyle = Object.values(textStyle).some((v) => v !== undefined)
+  const style: SceneStyle | undefined = hasTextStyle ? { textStyle } : undefined
   const hasTransform = ['tx', 'ty', 'rotate', 'xscale', 'yscale'].some((key) => values[key] !== undefined)
   const read = (key: string, fallback: number) => { const parsed = Number(values[key] ?? fallback); return Number.isFinite(parsed) ? parsed : fallback }
   const transform = hasTransform ? { translate: { x: read('tx', 0), y: read('ty', 0) }, rotate: read('rotate', 0), xScale: read('xscale', 1), yScale: read('yscale', 1) } : undefined
-  return { id: values.id || newId(), name, visible: values.visible !== 'false', locked: values.locked === 'true', kind, ...((start || end || routing) ? { bindings: { start, end, routing } } : {}), ...(transform ? { transform } : {}) }
+  return { id: values.id || newId(), name, visible: values.visible !== 'false', locked: values.locked === 'true', kind, ...((start || end || routing) ? { bindings: { start, end, routing } } : {}), ...(style ? { style } : {}), ...(transform ? { transform } : {}) }
 }
 
-const metaLine = (node: SceneNode) => `% figureit: id=${node.id}${node.name ? ` name=${encodeURIComponent(node.name)}` : ''} visible=${node.visible} locked=${node.locked} kind=${node.kind}${node.bindings?.start ? ` start=${encodeURIComponent(`${node.bindings.start.nodeId}@${node.bindings.start.anchor}`)}` : ''}${node.bindings?.end ? ` end=${encodeURIComponent(`${node.bindings.end.nodeId}@${node.bindings.end.anchor}`)}` : ''}${node.bindings?.routing ? ` routing=${node.bindings.routing}` : ''}${isIdentity(node.transform) ? '' : ` tx=${decimal(node.transform.translate.x)} ty=${decimal(node.transform.translate.y)} rotate=${decimal(node.transform.rotate)} xscale=${decimal(node.transform.xScale)} yscale=${decimal(node.transform.yScale)}`}\n`
+const textStyleMeta = (ts?: SceneTextStyle) => {
+  if (!ts) return ''
+  const parts: string[] = []
+  if (ts.fontFamily) parts.push(`font=${ts.fontFamily}`)
+  if (ts.fontSize) parts.push(`fsize=${ts.fontSize}`)
+  if (ts.bold) parts.push('bold=true')
+  if (ts.italic) parts.push('italic=true')
+  if (ts.strike) parts.push('strike=true')
+  if (ts.align) parts.push(`talign=${ts.align}`)
+  if (ts.valign) parts.push(`tvalign=${ts.valign}`)
+  return parts.length ? ` ${parts.join(' ')}` : ''
+}
+
+const metaLine = (node: SceneNode) => `% figureit: id=${node.id}${node.name ? ` name=${encodeURIComponent(node.name)}` : ''} visible=${node.visible} locked=${node.locked} kind=${node.kind}${node.bindings?.start ? ` start=${encodeURIComponent(`${node.bindings.start.nodeId}@${node.bindings.start.anchor}`)}` : ''}${node.bindings?.end ? ` end=${encodeURIComponent(`${node.bindings.end.nodeId}@${node.bindings.end.anchor}`)}` : ''}${node.bindings?.routing ? ` routing=${node.bindings.routing}` : ''}${textStyleMeta(node.style?.textStyle)}${isIdentity(node.transform) ? '' : ` tx=${decimal(node.transform.translate.x)} ty=${decimal(node.transform.translate.y)} rotate=${decimal(node.transform.rotate)} xscale=${decimal(node.transform.xScale)} yscale=${decimal(node.transform.yScale)}`}\n`
 const isIdentity = (t: Transform) => t.translate.x === 0 && t.translate.y === 0 && t.rotate === 0 && t.xScale === 1 && t.yScale === 1
 const cloneTransform = (t: Transform): Transform => ({ translate: { ...t.translate }, rotate: t.rotate, xScale: t.xScale, yScale: t.yScale })
 
@@ -113,6 +146,9 @@ const kindFor = (source: string): NodeKind => {
   if (/\\(?:draw|path)\b/.test(text)) {
     if (/rectangle\b/.test(text)) return /rounded corners/.test(text) ? 'roundrect' : 'rect'
     if (/ellipse\b/.test(text)) return 'ellipse'
+    if (/-\||\|-|to\s*\[|controls\b|plot\s*\[\s*smooth/.test(text)) {
+      return /->|<-|<->/.test(text) ? 'connector' : 'line'
+    }
     if (!/--/.test(text)) return 'raw'
     if (/->|<-|<->/.test(text)) return 'connector'
     return (text.match(/--/g)?.length ?? 0) <= 1 ? 'line' : 'path'
@@ -136,7 +172,7 @@ const styleFor = (source: string): SceneStyle | undefined => {
   const style: SceneStyle = { stroke: xcolor('draw') ?? xcolor('stroke') ?? option(['draw', 'stroke']), fill: xcolor('fill') ?? option(['fill']), ...(start && end ? { gradient: { start, end, angle: Number(option(['shading angle']) ?? 0) } } : {}), strokeWidth: number(option(['line width', 'stroke width'])), opacity: number(option(['opacity'])), dash: option(['dash pattern']), arrow }
   return Object.values(style).some((value) => value !== undefined) ? style : undefined
 }
-const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometry' | 'style' | 'text' | 'image' | 'transform'> => {
+const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometry' | 'style' | 'text' | 'image' | 'transform' | 'bindings'> => {
   const points = coordinates(source.replace(/\[[^\]]*\]/g, ''))
   const bounds = points.length ? { x: Math.min(...points.map((point) => point.x)), y: Math.min(...points.map((point) => point.y)), width: Math.max(...points.map((point) => point.x)) - Math.min(...points.map((point) => point.x)), height: Math.max(...points.map((point) => point.y)) - Math.min(...points.map((point) => point.y)) } : undefined
   let geometry: SceneGeometry | undefined = ['rect', 'roundrect'].includes(kind) && points.length >= 2 ? { x: points[0].x, y: points[0].y, width: points[1].x - points[0].x, height: points[1].y - points[0].y }
@@ -144,10 +180,15 @@ const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometr
       : ['triangle', 'diamond'].includes(kind) && bounds ? bounds
       : ['line', 'path', 'connector'].includes(kind) ? { points } : ['text', 'math', 'image'].includes(kind) && points[0] ? { x: points[0].x, y: points[0].y } : undefined
   const content = source.match(/\{([^{}]*)\}\s*;?\s*(?:%.*)?$/)?.[1]
+  const nodeLabel = source.match(/node(?:\s*\[[^\]]*\])?\s*\{([^{}]*)\}/)?.[1]
+  const text = (kind === 'text' || kind === 'math') ? content : nodeLabel
   const imageMatch = source.match(/\\includegraphics(?:\[([^\]]*)\])?\{([^}]+)\}/)
   const image = imageMatch ? { href: imageMatch[2], width: number(imageMatch[1]?.match(/width\s*=\s*([-.\d]+cm?)/)?.[1]), height: number(imageMatch[1]?.match(/height\s*=\s*([-.\d]+cm?)/)?.[1]) } : undefined
   if (kind === 'image' && image && points[0]) geometry = { x: points[0].x - (image.width ?? 0) / 2, y: points[0].y - (image.height ?? 0) / 2, ...(image.width === undefined ? {} : { width: image.width }), ...(image.height === undefined ? {} : { height: image.height }) }
-  return { ...(geometry ? { geometry } : {}), ...(styleFor(source) ? { style: styleFor(source) } : {}), ...((kind === 'text' || kind === 'math') && content ? { text: content } : {}), ...(image ? { image } : {}), transform: scopeTransform(source) }
+  let routing: ConnectorBindings['routing'] | undefined = undefined
+  if (/-\||\|-/.test(source)) routing = 'elbow'
+  else if (/to\s*\[|controls\b|plot\s*\[\s*smooth/.test(source)) routing = 'curved'
+  return { ...(geometry ? { geometry } : {}), ...(styleFor(source) ? { style: styleFor(source) } : {}), ...(text !== undefined ? { text } : {}), ...(image ? { image } : {}), transform: scopeTransform(source), ...(routing ? { bindings: { routing } } : {}) }
 }
 
 const scopeTransform = (source: string): Transform => {
@@ -188,7 +229,11 @@ export const parseTikz = (source: string): ParseResult => {
     const kind = metadata?.kind && metadata.kind !== 'raw' ? metadata.kind : detectedKind
     const itemMetadata = kind === 'raw' ? undefined : metadata
     const properties = propertiesFor(kind, token)
-    stack.at(-1)!.push({ id: itemMetadata?.id ?? newId(), kind, name: itemMetadata?.name, visible: itemMetadata?.visible ?? true, locked: itemMetadata?.locked ?? false, bindings: itemMetadata?.bindings, prefix: pending, source: token, ...properties, ...(itemMetadata?.transform ? { transform: itemMetadata.transform } : {}) })
+    const itemBindings = itemMetadata?.bindings ?? properties.bindings
+    const itemStyle = itemMetadata?.style
+      ? { ...properties.style, ...itemMetadata.style, ...(properties.style?.textStyle || itemMetadata.style.textStyle ? { textStyle: { ...properties.style?.textStyle, ...itemMetadata.style.textStyle } } : {}) }
+      : properties.style
+    stack.at(-1)!.push({ id: itemMetadata?.id ?? newId(), kind, name: itemMetadata?.name, visible: itemMetadata?.visible ?? true, locked: itemMetadata?.locked ?? false, prefix: pending, source: token, ...properties, ...(itemStyle ? { style: itemStyle } : {}), bindings: itemBindings, ...(itemMetadata?.transform ? { transform: itemMetadata.transform } : {}) })
     pending = ''; if (itemMetadata) metadata = undefined
   }
   if (pending && /\S/.test(pending)) roots.push({ id: newId(), kind: 'raw', visible: true, locked: false, transform: identity(), prefix: '', source: pending })
@@ -224,28 +269,66 @@ const inlineOptions = (node: SceneNode) => {
   return values.length ? `[${values.join(',')}]` : ''
 }
 const coordinate = (point: ScenePoint) => `(${decimal(point.x)},${decimal(point.y)})`
+
+const formatTikzText = (rawText: string, ts?: SceneTextStyle) => {
+  let text = rawText.replace(/\n/g, ' \\\\ ')
+  if (ts?.strike) text = `\\sout{${text}}`
+  if (ts?.italic) text = `\\textit{${text}}`
+  if (ts?.bold) text = `\\textbf{${text}}`
+  return text
+}
+
 const generatedSource = (node: SceneNode): string | undefined => {
   const geometry = node.geometry
   if (!geometry) return undefined
   const options = inlineOptions(node)
-  if (['rect', 'roundrect'].includes(node.kind) && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x)},${decimal(geometry.y)}) rectangle (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height)});`
-  if (node.kind === 'ellipse' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height / 2)}) ellipse (${decimal(geometry.width / 2)} and ${decimal(geometry.height / 2)});`
-  if (node.kind === 'triangle' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y)}) -- cycle;`
-  if (node.kind === 'diamond' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height / 2)}) -- (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y + geometry.height / 2)}) -- cycle;`
+  const hasMultipleLines = node.text?.includes('\n')
+  const alignOpt = node.style?.textStyle?.align ? `align=${node.style.textStyle.align}` : hasMultipleLines ? 'align=center' : ''
+  const fontOpt = node.style?.textStyle?.fontFamily === 'mono' ? 'font=\\ttfamily' : node.style?.textStyle?.fontFamily === 'serif' ? 'font=\\rmfamily' : ''
+  const textNodeOpts = [alignOpt, fontOpt].filter(Boolean).join(',')
+  const textOptsStr = textNodeOpts ? `[pos=0.5,${textNodeOpts}]` : '[pos=0.5]'
+  const formattedText = node.text ? formatTikzText(node.text, node.style?.textStyle) : ''
+  const textSuffix = node.text && !['text', 'math'].includes(node.kind) ? ` node${textOptsStr} {${formattedText}}` : ''
+  if (['rect', 'roundrect'].includes(node.kind) && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x)},${decimal(geometry.y)}) rectangle (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height)})${textSuffix};`
+  if (node.kind === 'ellipse' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height / 2)}) ellipse (${decimal(geometry.width / 2)} and ${decimal(geometry.height / 2)})${textSuffix};`
+  if (node.kind === 'triangle' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y)}) -- cycle${textSuffix};`
+  if (node.kind === 'diamond' && geometry.x !== undefined && geometry.y !== undefined && geometry.width !== undefined && geometry.height !== undefined) return `\\draw${options} (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y + geometry.height)}) -- (${decimal(geometry.x + geometry.width)},${decimal(geometry.y + geometry.height / 2)}) -- (${decimal(geometry.x + geometry.width / 2)},${decimal(geometry.y)}) -- (${decimal(geometry.x)},${decimal(geometry.y + geometry.height / 2)}) -- cycle${textSuffix};`
   const points = geometry.points
-  if (node.kind === 'connector' && points && points.length >= 2) {
-    const [start, end] = [points[0], points.at(-1)!]
-    if (node.bindings?.routing === 'elbow') return `\\draw${options} ${coordinate(start)} -| ${coordinate(end)};`
-    if (node.bindings?.routing === 'curved') return `\\draw${options} ${coordinate(start)} to[out=0,in=180] ${coordinate(end)};`
+  if (['line', 'path', 'connector'].includes(node.kind) && points && points.length >= 2) {
+    const routing = node.bindings?.routing
+    if (routing === 'elbow') {
+      if (points.length === 2) {
+        return `\\draw${options} ${coordinate(points[0])} -|${textSuffix} ${coordinate(points[1])};`
+      }
+      return `\\draw${options} ${points.map(coordinate).join(' -- ')}${textSuffix};`
+    }
+    if (routing === 'curved') {
+      if (points.length === 2) {
+        return `\\draw${options} ${coordinate(points[0])} to[out=0,in=180]${textSuffix} ${coordinate(points[1])};`
+      }
+      if (points.length === 3) {
+        return `\\draw${options} ${coordinate(points[0])} .. controls ${coordinate(points[1])} ..${textSuffix} ${coordinate(points[2])};`
+      }
+      if (points.length === 4) {
+        return `\\draw${options} ${coordinate(points[0])} .. controls ${coordinate(points[1])} and ${coordinate(points[2])} ..${textSuffix} ${coordinate(points[3])};`
+      }
+      return `\\draw${options} plot [smooth] coordinates {${points.map(coordinate).join(' ')}}${textSuffix};`
+    }
+    return `\\draw${options} ${points.map(coordinate).join(' -- ')}${textSuffix};`
   }
-  if (['line', 'path', 'connector'].includes(node.kind) && geometry.points?.length) return `\\draw${options} ${geometry.points.map(coordinate).join(' -- ')};`
-  if ((node.kind === 'text' || node.kind === 'math') && geometry.x !== undefined && geometry.y !== undefined && node.text !== undefined) return `\\node${options} at (${decimal(geometry.x)},${decimal(geometry.y)}) {${node.text}};`
+  if ((node.kind === 'text' || node.kind === 'math') && geometry.x !== undefined && geometry.y !== undefined && node.text !== undefined) {
+    const formatted = node.kind === 'math' ? node.text : formatTikzText(node.text, node.style?.textStyle)
+    const extraOpts = node.kind === 'text' ? [alignOpt, fontOpt].filter(Boolean) : []
+    const combinedOpts = extraOpts.length ? (options ? `[${options.slice(1, -1)},${extraOpts.join(',')}]` : `[${extraOpts.join(',')}]`) : options
+    return `\\node${combinedOpts} at (${decimal(geometry.x)},${decimal(geometry.y)}) {${formatted}};`
+  }
   if (node.kind === 'image' && geometry.x !== undefined && geometry.y !== undefined && node.image) {
     const sizes = [node.image.width !== undefined && `width=${decimal(node.image.width)}cm`, node.image.height !== undefined && `height=${decimal(node.image.height)}cm`].filter(Boolean).join(',')
     return `\\node${options} at (${decimal(geometry.x + (geometry.width ?? node.image.width ?? 0) / 2)},${decimal(geometry.y + (geometry.height ?? node.image.height ?? 0) / 2)}) {\\includegraphics${sizes ? `[${sizes}]` : ''}{${node.image.href}}};`
   }
   return undefined
 }
+
 const renderNode = (node: SceneNode): string => {
   if (node.kind === 'raw') return node.prefix + node.source
   const content = node.kind === 'group' ? (node.children ?? []).map(renderNode).join('') : generatedSource(node) ?? node.source
@@ -269,9 +352,39 @@ export const connectorAnchorPoint = (node: SceneNode, anchor: ConnectorAnchor): 
   const geometry = node.geometry
   if (geometry?.x === undefined || geometry.y === undefined || geometry.width === undefined || geometry.height === undefined) return undefined
   const left = geometry.x; const right = left + geometry.width; const bottom = geometry.y; const top = bottom + geometry.height
-  const x = anchor.includes('left') ? left : anchor.includes('right') ? right : (left + right) / 2
-  const y = anchor.includes('top') ? top : anchor.includes('bottom') ? bottom : (bottom + top) / 2
   const centerX = (left + right) / 2; const centerY = (bottom + top) / 2
+  const rx = geometry.width / 2; const ry = geometry.height / 2
+
+  let x = anchor.includes('left') ? left : anchor.includes('right') ? right : centerX
+  let y = anchor.includes('top') ? top : anchor.includes('bottom') ? bottom : centerY
+
+  if (node.kind === 'diamond') {
+    if (anchor === 'top') { x = centerX; y = top }
+    else if (anchor === 'bottom') { x = centerX; y = bottom }
+    else if (anchor === 'left') { x = left; y = centerY }
+    else if (anchor === 'right') { x = right; y = centerY }
+    else if (anchor === 'top-left') { x = (left + centerX) / 2; y = (top + centerY) / 2 }
+    else if (anchor === 'top-right') { x = (right + centerX) / 2; y = (top + centerY) / 2 }
+    else if (anchor === 'bottom-left') { x = (left + centerX) / 2; y = (bottom + centerY) / 2 }
+    else if (anchor === 'bottom-right') { x = (right + centerX) / 2; y = (bottom + centerY) / 2 }
+  } else if (node.kind === 'triangle') {
+    if (anchor === 'top') { x = centerX; y = top }
+    else if (anchor === 'bottom') { x = centerX; y = bottom }
+    else if (anchor === 'bottom-left') { x = left; y = bottom }
+    else if (anchor === 'bottom-right') { x = right; y = bottom }
+    else if (anchor === 'left' || anchor === 'top-left') { x = (left + centerX) / 2; y = (bottom + top) / 2 }
+    else if (anchor === 'right' || anchor === 'top-right') { x = (right + centerX) / 2; y = (bottom + top) / 2 }
+  } else if (node.kind === 'ellipse') {
+    if (anchor === 'top') { x = centerX; y = top }
+    else if (anchor === 'bottom') { x = centerX; y = bottom }
+    else if (anchor === 'left') { x = left; y = centerY }
+    else if (anchor === 'right') { x = right; y = centerY }
+    else if (anchor === 'top-left') { x = centerX - rx * 0.707107; y = centerY + ry * 0.707107 }
+    else if (anchor === 'top-right') { x = centerX + rx * 0.707107; y = centerY + ry * 0.707107 }
+    else if (anchor === 'bottom-left') { x = centerX - rx * 0.707107; y = centerY - ry * 0.707107 }
+    else if (anchor === 'bottom-right') { x = centerX + rx * 0.707107; y = centerY - ry * 0.707107 }
+  }
+
   const scaledX = (x - centerX) * node.transform.xScale; const scaledY = (y - centerY) * node.transform.yScale
   const angle = node.transform.rotate * Math.PI / 180; const cos = Math.cos(angle); const sin = Math.sin(angle)
   return {
@@ -279,6 +392,7 @@ export const connectorAnchorPoint = (node: SceneNode, anchor: ConnectorAnchor): 
     y: centerY + scaledX * sin + scaledY * cos + node.transform.translate.y,
   }
 }
+
 export const nearestConnectorAnchor = (node: SceneNode, point: ScenePoint): ConnectorBinding | undefined => {
   let best: { anchor: ConnectorAnchor; distance: number } | undefined
   for (const anchor of anchors) {

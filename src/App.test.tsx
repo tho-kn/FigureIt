@@ -141,10 +141,105 @@ describe('FigureIt scene editor', () => {
     source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value; expect(source).toContain('opacity=0.5'); expect(source).toContain('red,255;green,0;blue,0')
   })
 
-  it('creates and resizes each new diagram primitive', async () => {
+  it('centers shapes on the canvas and matches dimensions', async () => {
     const user = userEvent.setup(); render(<App />)
-    for (const name of ['Rounded rectangle', 'Triangle', 'Diamond']) { await user.click(screen.getByRole('button', { name })); expect(screen.getByLabelText<HTMLInputElement>('Width').value).toBe('3.5') }
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    await user.click(screen.getByRole('button', { name: 'Center Canvas H' }))
     const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
-    expect(source).toContain('kind=roundrect'); expect(source).toContain('kind=triangle'); expect(source).toContain('kind=diamond'); expect(source).toContain('rounded corners=0.2cm'); expect(source).toContain('-- cycle')
+    expect(source).toMatch(/rectangle \(\d+\.\d+/)
+
+    await user.click(screen.getByRole('button', { name: 'Ellipse' }))
+    const layers = screen.getAllByRole('button', { name: /Rectangle|Ellipse/ }).filter((b) => b.className === 'layer-name')
+    await user.click(layers[0]); await user.keyboard('{Shift>}'); await user.click(layers[1]); await user.keyboard('{/Shift}')
+    expect(screen.getByRole('button', { name: 'Match Width' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Match Width' }))
+  })
+
+  it('filters layers and offers AI quick action prompt chips', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    await user.type(screen.getByPlaceholderText('Filter layers...'), 'Rect')
+    const layerBtn = screen.getAllByRole('button', { name: /Rectangle/ }).find((b) => b.className === 'layer-name')
+    expect(layerBtn).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Assistant' }))
+    expect(screen.getByRole('button', { name: '🪄 Auto-Align & Tidy' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '🎨 IEEE Publication Palette' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '🪄 Auto-Align & Tidy' }))
+    expect(backend.askClaude).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('Align all shapes'))
+  })
+
+  it('supports copy and paste of selected shapes', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    expect(screen.getAllByTestId('shape')).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: 'Copy selection' }))
+    await user.click(screen.getByRole('button', { name: 'Paste selection' }))
+    expect(screen.getAllByTestId('shape')).toHaveLength(2)
+  })
+
+  it('supports multi-selection and universal line routing', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Line' }))
+    const routingSelect = screen.getByLabelText('Connector route')
+    expect(routingSelect).toBeInTheDocument()
+    fireEvent.change(routingSelect, { target: { value: 'elbow' } })
+    const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
+    expect(source).toContain('routing=elbow')
+  })
+
+  it('supports rich multi-line text, shape border patterns, and manual canvas sizing', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    
+    // Set dashed line pattern on shape border
+    const dashSelect = screen.getByLabelText('Line pattern')
+    fireEvent.change(dashSelect, { target: { value: 'dashed' } })
+    expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('dash pattern=on 4pt off 3pt')
+
+    // Enter multi-line text and rich formatting
+    const textInput = screen.getByLabelText('Text content')
+    fireEvent.change(textInput, { target: { value: 'Header\nSubline' } })
+    await user.click(screen.getByLabelText('Bold text'))
+    await user.click(screen.getByLabelText('Italic text'))
+    await user.click(screen.getByLabelText('Text align left'))
+
+    const source = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
+    expect(source).toContain('bold=true')
+    expect(source).toContain('italic=true')
+    expect(source).toContain('talign=left')
+    expect(source).toContain(String.raw`\textbf{\textit{Header \\ Subline}}`)
+
+    // Change canvas width and height manually
+    const widthInput = screen.getByLabelText('Canvas width')
+    const heightInput = screen.getByLabelText('Canvas height')
+    fireEvent.change(widthInput, { target: { value: '1200' } })
+    fireEvent.change(heightInput, { target: { value: '750' } })
+    expect(screen.getByLabelText('Figure artboard')).toHaveAttribute('viewBox', '0 0 1200 750')
+  })
+
+  it('supports saving as .tex source and opening .tex files directly', async () => {
+    const user = userEvent.setup(); render(<App />)
+    
+    // Test Save .tex button
+    const saveBtn = screen.getByRole('button', { name: 'Save TeX file' })
+    expect(saveBtn).toBeInTheDocument()
+    await user.click(saveBtn)
+    expect(screen.getByText(/Saved/i)).toBeInTheDocument()
+
+    // Test opening a .tex file
+    const sampleTex = `\\begin{tikzpicture}
+\\node[draw=none, fill=none] (node-1) at (2, 3) {Imported TeX};
+\\end{tikzpicture}`
+    const file = new File([sampleTex], 'diagram.tex', { type: 'text/plain' })
+    const fileInput = screen.getByLabelText('TeX file')
+    await user.upload(fileInput, file)
+
+    expect(screen.getByText('diagram.tex')).toBeInTheDocument()
+    expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('Imported TeX')
   })
 })
+
+
+

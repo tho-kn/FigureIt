@@ -262,4 +262,16 @@ describe('TikZ scene document', () => {
     expect(document.nodes[0]).toMatchObject({ geometry: { x: 3, y: 2.5, width: 2, height: 1 }, image: { width: 2, height: 1 } })
     expect(serializeDocument(document)).toContain('at (4,3) {\\includegraphics[width=2cm,height=1cm]')
   })
+
+  it('round trips shapes with embedded text labels', () => {
+    const document = parseTikz(String.raw`\begin{tikzpicture}
+% figureit: id=box kind=rect
+\draw[draw=black] (0,0) rectangle (3,2) node[pos=0.5] {Server Box};
+\end{tikzpicture}`).document
+    expect(document.nodes[0]).toMatchObject({ kind: 'rect', text: 'Server Box' })
+    const source = serializeDocument(document)
+    expect(source).toContain('node[pos=0.5] {Server Box}')
+    expect(parseTikz(source).document.nodes[0].text).toBe('Server Box')
+  })
 })
+

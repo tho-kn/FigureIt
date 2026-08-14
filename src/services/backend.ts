@@ -50,8 +50,12 @@ export async function createProject(): Promise<Project> {
 }
 
 export async function openProject(): Promise<Project> {
-  const result = await call<Project>('open_project')
-  if (result) return result
+  try {
+    const result = await call<Project>('open_project')
+    if (result) return result
+  } catch {
+    // Graceful fallback if dialog is cancelled or unavailable
+  }
   if (isMobile()) try {
     const saved = JSON.parse(localStorage.getItem(localProjectKey) ?? 'null') as Partial<Project> | null
     if (saved && typeof saved.source === 'string' && saved.source.length <= 1_000_000) {

@@ -217,14 +217,47 @@ pub fn create_project_at(path: PathBuf) -> Result<ProjectInfo, BackendError> {
 }
 
 pub fn open_project_at(path: PathBuf) -> Result<ProjectInfo, BackendError> {
-    let project = canonical_dir(&path)?;
-    if !project.join(ASSETS).is_dir() || !source_path(&project).is_file() {
-        return Err(BackendError::InvalidRequest);
+    if path.is_file() {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let project = canonical_dir(parent)?;
+        let _ = fs::create_dir_all(project.join(ASSETS));
+        let content = fs::read_to_string(&path).map_err(|_| BackendError::OperationFailed)?;
+        let title = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("figure.tex")
+            .to_string();
+        return Ok(ProjectInfo {
+            handle: next_handle(),
+            title,
+            source: content,
+        });
     }
+    let project = canonical_dir(&path)?;
+    let _ = fs::create_dir_all(project.join(ASSETS));
+    let source = if source_path(&project).is_file() {
+        read_source(&project)?
+    } else {
+        let mut found_content = None;
+        if let Ok(entries) = fs::read_dir(&project) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension()
+                    .is_some_and(|ext| ext == "tex" || ext == "tikz")
+                {
+                    if let Ok(c) = fs::read_to_string(&p) {
+                        found_content = Some(c);
+                        break;
+                    }
+                }
+            }
+        }
+        found_content.unwrap_or_else(|| "\\begin{tikzpicture}\n\\end{tikzpicture}\n".to_string())
+    };
     Ok(ProjectInfo {
         handle: next_handle(),
         title: safe_title(&project),
-        source: read_source(&project)?,
+        source,
     })
 }
 
