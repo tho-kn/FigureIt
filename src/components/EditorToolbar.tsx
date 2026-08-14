@@ -1,4 +1,4 @@
-import type { Tool } from "./toolDomain";
+import { TOOL_LABELS, type Tool, type ToolShortcuts } from "./toolDomain";
 
 const ToolIcon = ({ kind, size = 16 }: { kind: Tool; size?: number }) => {
   switch (kind) {
@@ -97,40 +97,9 @@ const ToolIcon = ({ kind, size = 16 }: { kind: Tool; size?: number }) => {
   }
 };
 
-const labels: Array<[Tool, string]> = [
-  ["select", "Select"],
-  ["rect", "Rectangle"],
-  ["roundrect", "Rounded rectangle"],
-  ["ellipse", "Ellipse"],
-  ["triangle", "Triangle"],
-  ["diamond", "Diamond"],
-  ["text", "Text / math"],
-  ["line", "Line"],
-  ["arrow", "Arrow"],
-  ["connector", "Connector"],
-  ["path", "Pen path"],
-  ["image", "Place image"],
-  ["dimension", "Dimension"],
-];
-
-const toolShortcuts: Partial<Record<Tool, string>> = {
-  select: "V",
-  rect: "R",
-  roundrect: "U",
-  ellipse: "O",
-  triangle: "G",
-  diamond: "D",
-  text: "T",
-  line: "L",
-  arrow: "A",
-  connector: "C",
-  path: "P",
-  image: "I",
-  dimension: "M",
-};
-
 export type EditorToolbarProps = {
   tool: Tool;
+  shortcuts: ToolShortcuts;
   desktop: boolean;
   imageInputRef: React.RefObject<HTMLInputElement | null>;
   texFileInputRef: React.RefObject<HTMLInputElement | null>;
@@ -141,6 +110,7 @@ export type EditorToolbarProps = {
 
 export function EditorToolbar({
   tool,
+  shortcuts,
   desktop,
   imageInputRef,
   texFileInputRef,
@@ -150,18 +120,22 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   return (
     <aside className="toolstrip" aria-label="Tools">
-      {labels.map(([id, label]) => (
-        <button
-          key={id}
-          aria-label={label}
-          data-tip={toolShortcuts[id] ? `${label} · ${toolShortcuts[id]}` : label}
-          className={tool === id ? "active" : ""}
-          disabled={id === "image" && !desktop}
-          onClick={() => onSelectTool(id)}
-        >
-          <ToolIcon kind={id} />
-        </button>
-      ))}
+      {TOOL_LABELS.map(([id, label]) => {
+        const tip = shortcuts[id] ? `${label} · ${shortcuts[id].toUpperCase()}` : label;
+        return (
+          <button
+            key={id}
+            aria-label={label}
+            data-tip={tip}
+            title={tip}
+            className={tool === id ? "active" : ""}
+            disabled={id === "image" && !desktop}
+            onClick={() => onSelectTool(id)}
+          >
+            <ToolIcon kind={id} />
+          </button>
+        );
+      })}
       <input ref={imageInputRef} aria-label="Image file" type="file" accept="image/*" hidden onChange={(event) => onPlaceImage(event.target.files?.[0])} />
       <input
         ref={texFileInputRef}
@@ -176,5 +150,55 @@ export function EditorToolbar({
         }}
       />
     </aside>
+  );
+}
+
+const commonShortcuts = [
+  ["Open project", "⌘/Ctrl O"],
+  ["Save .tex", "⌘/Ctrl S"],
+  ["Undo / redo", "⌘/Ctrl Z · ⇧⌘/Ctrl Z"],
+  ["Copy / paste", "⌘/Ctrl C · ⌘/Ctrl V"],
+  ["Duplicate", "⌘/Ctrl D"],
+  ["Group / ungroup", "⌘/Ctrl G · ⇧⌘/Ctrl G"],
+  ["Disable snapping while dragging", "Ctrl"],
+];
+
+export function KeyboardShortcutsDialog({
+  shortcuts,
+  onChange,
+  onReset,
+  onClose,
+}: {
+  shortcuts: ToolShortcuts;
+  onChange: (tool: Tool, shortcut: string) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="shortcut-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcut-dialog-title" onKeyDown={(event) => event.key === "Escape" && onClose()}>
+        <header>
+          <h2 id="shortcut-dialog-title">Keyboard shortcuts</h2>
+          <button aria-label="Close keyboard shortcuts" onClick={onClose}>×</button>
+        </header>
+        <p>Tool shortcuts use one letter or number without modifiers. Reusing a key removes it from the previous tool.</p>
+        <div className="shortcut-grid">
+          {TOOL_LABELS.map(([tool, label]) => (
+            <label key={tool}>
+              <span>{label}</span>
+              <input aria-label={`${label} shortcut`} maxLength={1} value={shortcuts[tool].toUpperCase()} onChange={(event) => onChange(tool, event.target.value)} />
+            </label>
+          ))}
+        </div>
+        <h3>Common commands</h3>
+        <dl className="shortcut-list">
+          {commonShortcuts.map(([label, shortcut]) => <div key={label}><dt>{label}</dt><dd><kbd>{shortcut}</kbd></dd></div>)}
+        </dl>
+        <footer>
+          <button onClick={onReset}>Reset defaults</button>
+          <button className="export" onClick={onClose}>Done</button>
+        </footer>
+      </section>
+    </div>
   );
 }

@@ -73,6 +73,35 @@ describe('editor interaction math', () => {
     expect(preview.geometry?.points).toHaveLength(2)
   })
 
+  it.each([
+    ['horizontal', { x: 4, y: 0.2 }, 0],
+    ['vertical', { x: 0.2, y: 4 }, 90],
+    ['diagonal', { x: 4, y: 3.6 }, 45],
+  ])('snaps a line endpoint to a nearby %s angle', (_name, raw, expectedAngle) => {
+    const px = 37.7952755906
+    const { preview } = previewDrag(
+      { id: 'line1', pointerId: 1, start: { x: 0, y: 0 }, mode: 'point', points: [{ x: 0, y: 0 }, { x: 2, y: 1 }], pointIndex: 1 },
+      { x: raw.x * px, y: 520 - raw.y * px },
+    )
+    const point = preview.geometry?.points?.[1]
+    expect(point).toBeDefined()
+    expect(Math.atan2(point!.y, point!.x) * 180 / Math.PI).toBeCloseTo(expectedAngle, 5)
+  })
+
+  it('preserves the raw endpoint when snapping is bypassed', () => {
+    const px = 37.7952755906
+    const raw = { x: 4, y: 0.2 }
+    const target = shape({ geometry: { x: 1, y: -1, width: 3, height: 2 } })
+    const { preview } = previewDrag(
+      { id: 'line1', pointerId: 1, start: { x: 0, y: 0 }, mode: 'point', points: [{ x: 0, y: 0 }, { x: 2, y: 1 }], pointIndex: 1 },
+      { x: raw.x * px, y: 520 - raw.y * px },
+      [target],
+      false,
+    )
+    expect(preview.geometry?.points?.[1]).toEqual(raw)
+    expect(preview.snappedAnchor).toBeUndefined()
+  })
+
   it('rounds numbers to a fixed number of digits', () => {
     expect(editorNumber(1.234567)).toBe(1.235)
     expect(editorNumber(1.234567, 1)).toBe(1.2)

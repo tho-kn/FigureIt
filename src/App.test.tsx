@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const backend = vi.hoisted(() => ({
   desktopFeaturesAvailable: () => true, createProject: vi.fn(async () => ({ handle: 'test', title: 'Diagram', source: String.raw`\begin{tikzpicture}
 \shade (0,0) circle (1);
@@ -10,7 +10,18 @@ vi.mock('./services/backend', () => backend)
 import App from './App'
 
 describe('FigureIt scene editor', () => {
-  afterEach(cleanup)
+  beforeEach(() => {
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        clear: () => values.clear(),
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      },
+    })
+  })
+  afterEach(() => { cleanup(); window.localStorage.clear() })
   it('creates a shape into canonical source and saves while preserving unsupported raw source', async () => {
     const user = userEvent.setup(); render(<App />)
     await user.click(screen.getByRole('button', { name: 'New project' })); await user.click(screen.getByRole('button', { name: 'Rectangle' }))
@@ -155,6 +166,14 @@ describe('FigureIt scene editor', () => {
     fireEvent.pointerDown(screen.getByLabelText('Point handle 2'), { pointerId: 14, clientX: 189, clientY: 407 })
     fireEvent.pointerUp(canvas, { pointerId: 14, clientX: 260, clientY: 300 })
     expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toMatch(/-- \(6\.879,5\.821\)/)
+  })
+
+  it('bypasses line endpoint snapping while Ctrl is held', async () => {
+    const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Line' }))
+    const canvas = screen.getByLabelText('Figure artboard'); Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => false })
+    fireEvent.pointerDown(screen.getByLabelText('Point handle 2'), { pointerId: 15, clientX: 189, clientY: 407 })
+    fireEvent.pointerUp(canvas, { pointerId: 15, clientX: 260, clientY: 450, ctrlKey: true })
+    expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toMatch(/-- \(6\.879,1\.852\)/)
   })
 
   it('unlocks a locked layer from the layers panel', async () => {
@@ -319,7 +338,22 @@ describe('FigureIt scene editor', () => {
     expect(rect.textContent?.trim()).toBe('')
     expect(rect.getAttribute('data-tip')).toContain('Rectangle')
     expect(rect.getAttribute('data-tip')).toContain('R')
+    expect(rect).toHaveAttribute('title', 'Rectangle · R')
     expect(screen.getByRole('button', { name: 'Select' }).getAttribute('data-tip')).toContain('V')
+  })
+
+  it('customizes and persists tool shortcuts from the Window menu', async () => {
+    const user = userEvent.setup(); render(<App />)
+    await user.click(screen.getByRole('button', { name: /Window/ }))
+    await user.click(screen.getByRole('menuitem', { name: /Keyboard shortcuts/ }))
+    const shortcut = screen.getByLabelText('Rectangle shortcut')
+    await user.clear(shortcut); await user.type(shortcut, 'x')
+    await user.click(screen.getByRole('button', { name: 'Done' }))
+    expect(screen.getByRole('button', { name: 'Rectangle' })).toHaveAttribute('title', 'Rectangle · X')
+    fireEvent.keyDown(window, { key: 'x' })
+    expect(screen.getAllByTestId('shape')).toHaveLength(1)
+    cleanup(); render(<App />)
+    expect(screen.getByRole('button', { name: 'Rectangle' })).toHaveAttribute('title', 'Rectangle · X')
   })
 
   it('offers a Photoshop-like options bar for the active tool', async () => {
@@ -358,4 +392,3 @@ describe('FigureIt scene editor', () => {
     expect(screen.queryByRole('button', { name: 'Request suggestion' })).not.toBeInTheDocument()
   })
 })
-

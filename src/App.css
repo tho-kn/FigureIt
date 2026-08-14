@@ -19,7 +19,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .menu-popover { position: absolute; top: calc(100% + 6px); left: 0; z-index: 300; min-width: 170px; background: #1b1f28; border: 1px solid #384155; border-radius: 6px; padding: 6px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
 .menu-popover button { display: flex; align-items: center; gap: 8px; text-align: left; padding: 6px 10px; font-size: 12px; background: transparent; border: 1px solid transparent; border-radius: 4px; }
 .menu-popover button:hover { background: #2c3a52; border-color: #3b4d70; }
+.menu-popover kbd { margin-left: auto; color: #8f9ab0; font: 11px ui-monospace, monospace; }
 .menu-divider { height: 1px; background: #343b4a; margin: 4px 0; }
+
+.dialog-backdrop { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; padding: 20px; background: rgba(5, 8, 13, .7); }
+.shortcut-dialog { width: min(620px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow: auto; box-sizing: border-box; border: 1px solid #46536b; border-radius: 8px; background: #20242d; box-shadow: 0 24px 70px rgba(0, 0, 0, .55); padding: 16px; }
+.shortcut-dialog header, .shortcut-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.shortcut-dialog h2 { margin: 0; color: #f4f7ff; }
+.shortcut-dialog h3 { margin: 16px 0 8px; color: #aeb9ce; font-size: 12px; }
+.shortcut-dialog p { margin: 10px 0 14px; color: #9ca8bd; font-size: 12px; }
+.shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+.shortcut-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #dce2ee; font-size: 12px; }
+.shortcut-grid input { width: 38px; box-sizing: border-box; border: 1px solid #46536b; border-radius: 4px; background: #171b23; color: #fff; padding: 5px; text-align: center; text-transform: uppercase; }
+.shortcut-list { margin: 0 0 16px; }
+.shortcut-list div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; color: #aeb9ce; font-size: 12px; }
+.shortcut-list dd { margin: 0; }
+.shortcut-list kbd { color: #dce2ee; font: 11px ui-monospace, monospace; }
+.shortcut-dialog footer { justify-content: flex-end; border-top: 1px solid #343b4a; padding-top: 12px; }
 
 /* Tool options bar */
 .optionsbar { min-height: 40px; display: flex; align-items: center; gap: 12px; padding: 5px 12px; background: #1b1f28; border-bottom: 1px solid #343b4a; overflow-x: auto; }
@@ -201,6 +217,7 @@ h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #
   .source-actions { grid-template-columns: 1fr; }
   .source-label textarea { min-height: 105px; }
   .dock-bottom button { min-height: 40px; }
+  .shortcut-grid { grid-template-columns: 1fr; }
 }
 
 @keyframes spin {

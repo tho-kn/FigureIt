@@ -50,20 +50,24 @@ import {
   type DragPreview,
   type SmartGuide,
 } from "./editor/interaction";
-import { EditorToolbar } from "./components/EditorToolbar";
+import { EditorToolbar, KeyboardShortcutsDialog } from "./components/EditorToolbar";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { LayersPanel } from "./components/LayersPanel";
 import { ToolOptions } from "./components/ToolOptions";
-import { LINE_KINDS, SHAPE_KINDS, TEXT_KINDS, toolNames, type Tool } from "./components/toolDomain";
+import { DEFAULT_TOOL_SHORTCUTS, LINE_KINDS, normalizeToolShortcuts, SHAPE_KINDS, TEXT_KINDS, TOOL_LABELS, toolNames, type Tool, type ToolShortcuts } from "./components/toolDomain";
 import "./App.css";
 
 const blank = String.raw`\begin{tikzpicture}
 \end{tikzpicture}`;
 
 
-const shortcutKeyToTool: Record<string, Tool> = {
-  v: "select", r: "rect", u: "roundrect", o: "ellipse", g: "triangle", d: "diamond",
-  t: "text", l: "line", a: "arrow", c: "connector", p: "path", i: "image", m: "dimension",
+const shortcutStorageKey = "figureit.tool-shortcuts";
+const loadToolShortcuts = (): ToolShortcuts => {
+  try {
+    return normalizeToolShortcuts(JSON.parse(window.localStorage.getItem(shortcutStorageKey) ?? "null"));
+  } catch {
+    return { ...DEFAULT_TOOL_SHORTCUTS };
+  }
 };
 
 type PanelId = "layers" | "inspector" | "history" | "source" | "assistant";
@@ -602,6 +606,8 @@ function App() {
   const [draggingPanel, setDraggingPanel] = useState<PanelId | null>(null);
   const [dragOverDock, setDragOverDock] = useState<DockId | null>(null);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
+  const [shortcutEditorOpen, setShortcutEditorOpen] = useState(false);
+  const [toolShortcuts, setToolShortcuts] = useState<ToolShortcuts>(loadToolShortcuts);
   const [shapeDefaults, setShapeDefaults] = useState(defaultToolDefaults.shape);
   const [textDefaults, setTextDefaults] = useState(defaultToolDefaults.text);
   const [lineDefaults, setLineDefaults] = useState(defaultToolDefaults.line);
@@ -631,6 +637,9 @@ function App() {
   const projectHandle = useRef<string | undefined>(undefined);
   const drag = useRef<Drag | null>(null);
   const nodes = useMemo(() => flattenRenderableNodes(doc), [doc]);
+  const shortcutKeyToTool = useMemo(() => Object.fromEntries(
+    TOOL_LABELS.flatMap(([id]) => toolShortcuts[id] ? [[toolShortcuts[id], id]] : []),
+  ) as Partial<Record<string, Tool>>, [toolShortcuts]);
 
   const find = useCallback((list: SceneNode[], nodeId: string): SceneNode | undefined =>
     list.find((node) => node.id === nodeId) ??
@@ -661,6 +670,16 @@ function App() {
 
   const active = find(doc.nodes, selected.at(-1) ?? "");
   projectHandle.current = project?.handle;
+
+  const changeToolShortcut = (toolId: Tool, value: string) => {
+    const shortcut = value.toLowerCase().replace(/[^a-z0-9]/g, "").slice(-1);
+    setToolShortcuts((current) => {
+      const next = { ...current };
+      if (shortcut) for (const [id] of TOOL_LABELS) if (id !== toolId && next[id] === shortcut) next[id] = "";
+      next[toolId] = shortcut;
+      return next;
+    });
+  };
 
 
   const copySelection = () => {
@@ -909,7 +928,7 @@ function App() {
   const finishDrag = (event: React.PointerEvent<SVGSVGElement>, cancel = false) => {
     const value = drag.current;
     if (!value || value.pointerId !== event.pointerId) return;
-    const { preview } = previewDrag(value, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled, canvasSize.width, canvasSize.height);
+    const { preview } = previewDrag(value, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled && !event.ctrlKey, canvasSize.width, canvasSize.height);
     drag.current = null;
     setDragPreview(null);
     setSmartGuides([]);
@@ -1175,12 +1194,26 @@ function App() {
   };
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(shortcutStorageKey, JSON.stringify(toolShortcuts));
+    } catch {
+      // Storage can be unavailable in privacy-restricted webviews; shortcuts still work for this session.
+    }
+  }, [toolShortcuts]);
+
+  useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (editingTextNodeId || editingLayerNameId) return;
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault();
+        setShortcutEditorOpen(true);
+        setWindowMenuOpen(false);
+        return;
+      }
+      if (shortcutEditorOpen || editingTextNodeId || editingLayerNameId) return;
       const eventTarget = event.target as HTMLElement | null;
       if (eventTarget && ["INPUT", "TEXTAREA", "SELECT"].includes(eventTarget.tagName)) return;
-      if (!event.metaKey && !event.ctrlKey && !event.altKey && shortcutKeyToTool[event.key.toLowerCase()]) {
-        const next = shortcutKeyToTool[event.key.toLowerCase()];
+      const next = shortcutKeyToTool[event.key.toLowerCase()];
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && next) {
         if (next === "select" || next === "connector" || next === "path") {
           setTool(next);
           setNotice(
@@ -1670,6 +1703,16 @@ function App() {
               <button
                 role="menuitem"
                 onClick={() => {
+                  setShortcutEditorOpen(true);
+                  setWindowMenuOpen(false);
+                }}
+              >
+                <span>Keyboard shortcuts…</span>
+                <kbd>⌘/Ctrl ,</kbd>
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
                   setPanels(structuredClone(defaultPanels));
                   setToolsVisible(true);
                   setActiveBottomTab("source");
@@ -1750,6 +1793,14 @@ function App() {
           </button>
         </div>
       </header>
+      {shortcutEditorOpen && (
+        <KeyboardShortcutsDialog
+          shortcuts={toolShortcuts}
+          onChange={changeToolShortcut}
+          onReset={() => setToolShortcuts({ ...DEFAULT_TOOL_SHORTCUTS })}
+          onClose={() => setShortcutEditorOpen(false)}
+        />
+      )}
       <div className="optionsbar" aria-label="Tool options">
         <ToolOptions
           tool={tool}
@@ -1775,6 +1826,7 @@ function App() {
         {toolsVisible && (
           <EditorToolbar
             tool={tool}
+            shortcuts={toolShortcuts}
             desktop={desktop}
             imageInputRef={imageInput}
             texFileInputRef={texFileInput}
@@ -1947,7 +1999,7 @@ function App() {
               }}
               onPointerMove={(event) => {
                 if (drag.current?.pointerId === event.pointerId) {
-                  const { preview, guides } = previewDrag(drag.current, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled, canvasSize.width, canvasSize.height);
+                  const { preview, guides } = previewDrag(drag.current, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled && !event.ctrlKey, canvasSize.width, canvasSize.height);
                   setDragPreview(preview);
                   setSmartGuides(guides);
                 }

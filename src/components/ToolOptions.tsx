@@ -197,7 +197,7 @@ export function ToolOptions({
         </div>
         <span className="opt-hint">
           {active && LINE_KINDS.includes(active.kind)
-            ? "Editing the selected line."
+            ? "Drag endpoints to reshape; nearby 15° angles and shape anchors snap. Hold Ctrl to bypass."
             : `Options apply to the next ${toolNames[tool as keyof typeof toolNames] ?? tool}.`}
         </span>
       </>
@@ -224,7 +224,7 @@ export function ToolOptions({
             <option value="both">Both Ends (↔)</option>
           </select>
         </label>
-        <span className="opt-hint">Drag between two shapes' connection sites to connect them.</span>
+        <span className="opt-hint">Drag between connection sites; hold Ctrl while editing an endpoint to bypass snapping.</span>
       </>
     );
   }

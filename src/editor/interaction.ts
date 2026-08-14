@@ -137,18 +137,37 @@ export const previewDrag = (drag: Drag, point: CanvasPoint, nodes: SceneNode[] =
     let snapPos = rawPos;
     let snappedAnchor: { node: SceneNode; binding: ConnectorBinding; point: ScenePoint } | undefined;
 
-    const snapRadius = 0.5; // snap threshold in cm (~19px)
-    let bestDist = snapRadius;
-    for (const n of nodes) {
-      if (n.id === drag.id || (drag.fromId && n.id === drag.fromId) || !n.visible || n.locked || ["line", "path", "connector", "raw"].includes(n.kind)) continue;
-      for (const anchor of anchors) {
-        const ap = connectorAnchorPoint(n, anchor);
-        if (!ap) continue;
-        const dist = Math.hypot(ap.x - rawPos.x, ap.y - rawPos.y);
-        if (dist < bestDist) {
-          bestDist = dist;
-          snapPos = ap;
-          snappedAnchor = { node: n, binding: { nodeId: n.id, anchor }, point: ap };
+    if (snapEnabled) {
+      const snapRadius = 0.5; // snap threshold in cm (~19px)
+      let bestDist = snapRadius;
+      for (const n of nodes) {
+        if (n.id === drag.id || (drag.fromId && n.id === drag.fromId) || !n.visible || n.locked || ["line", "path", "connector", "raw"].includes(n.kind)) continue;
+        for (const anchor of anchors) {
+          const ap = connectorAnchorPoint(n, anchor);
+          if (!ap) continue;
+          const dist = Math.hypot(ap.x - rawPos.x, ap.y - rawPos.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            snapPos = ap;
+            snappedAnchor = { node: n, binding: { nodeId: n.id, anchor }, point: ap };
+          }
+        }
+      }
+
+      if (!snappedAnchor) {
+        const pointIndex = drag.pointIndex ?? drag.points.length - 1;
+        const fixed = pointIndex === 0 ? drag.points[1] : drag.points[pointIndex - 1];
+        if (fixed) {
+          const vx = rawPos.x - fixed.x;
+          const vy = rawPos.y - fixed.y;
+          const distance = Math.hypot(vx, vy);
+          const angle = Math.atan2(vy, vx);
+          const step = Math.PI / 12;
+          const snappedAngle = Math.round(angle / step) * step;
+          const difference = Math.abs(Math.atan2(Math.sin(angle - snappedAngle), Math.cos(angle - snappedAngle)));
+          if (distance > 0 && difference <= 5 * Math.PI / 180) {
+            snapPos = { x: fixed.x + distance * Math.cos(snappedAngle), y: fixed.y + distance * Math.sin(snappedAngle) };
+          }
         }
       }
     }
