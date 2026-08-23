@@ -141,7 +141,7 @@ export function EditorToolbar({
         ref={texFileInputRef}
         aria-label="TeX file"
         type="file"
-        accept=".tex,.tikz,.latex,text/plain"
+        accept=".tex,.tikz,.latex,.pptx,.pdf,text/plain,application/pdf"
         hidden
         onChange={(event) => {
           const f = event.target.files?.[0];

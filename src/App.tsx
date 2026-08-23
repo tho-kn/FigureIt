@@ -51,6 +51,7 @@ import {
   type SmartGuide,
 } from "./editor/interaction";
 import { EditorToolbar, KeyboardShortcutsDialog } from "./components/EditorToolbar";
+import { detectImportKind, importFile } from "./importers";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { LayersPanel } from "./components/LayersPanel";
 import { ToolOptions } from "./components/ToolOptions";
@@ -742,7 +743,36 @@ function App() {
     setNotice(label);
   };
 
+  const importExternalFile = async (file: File) => {
+    if (!detectImportKind(file.name)) return setNotice("Unsupported file type - import .tex, .pptx, or .pdf");
+    if (!project?.handle) return setNotice("Create a project before importing PPTX or PDF");
+    try {
+      const outcome = await importFile(file, {
+        targetWidthCm: canvasSize.width / PX_PER_CM,
+        targetHeightCm: canvasSize.height / PX_PER_CM,
+      });
+      let assetWarning = false;
+      for (const asset of outcome.assets) {
+        try {
+          await writeAsset(project.handle, asset.name, asset.bytes);
+        } catch {
+          assetWarning = true;
+        }
+      }
+      transact(outcome.label, outcome.operations);
+      setSelected(outcome.operations.filter((operation) => operation.type === "insert").map((operation) => operation.node.id));
+      setNotice(
+        outcome.warnings.length || assetWarning
+          ? `${outcome.label} with warnings${assetWarning ? " (an embedded image could not be stored)" : ""}`
+          : outcome.label,
+      );
+    } catch {
+      setNotice(`Could not import ${file.name}`);
+    }
+  };
+
   const openTexFile = async (file: File) => {
+    if (!/\.(tex|tikz|latex)$/i.test(file.name)) return void importExternalFile(file);
     try {
       const text = await file.text();
       const parsed = parseTikz(text);
@@ -1733,7 +1763,7 @@ function App() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             Open project
           </button>
-          <button aria-label="Open TeX file" onClick={() => texFileInput.current?.click()} title="Open standalone TikZ / TeX file">
+          <button aria-label="Open TeX file" onClick={() => texFileInput.current?.click()} title="Open standalone TikZ / TeX file, or import PPTX / PDF">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 14h8M8 18h6"/></svg>
             Open .tex
           </button>

@@ -4,6 +4,20 @@ FigureIt is a privacy-conscious desktop editor for TikZ figures. It combines dir
 
 > Early alpha: FigureIt intentionally edits a useful TikZ subset. Unsupported statements remain in the source as locked raw segments instead of being discarded.
 
+## See it in action
+
+### Visual editing with synchronized TikZ
+
+![FigureIt visual editor showing named layers, connected shapes, resize handles, gradient controls, and synchronized TikZ source](docs/images/figureit-editor.png)
+
+Select and reshape objects directly on the SVG canvas while Layers, Inspector, and TikZ source stay synchronized.
+
+### Customizable keyboard shortcuts
+
+![FigureIt keyboard shortcut editor over the visual canvas](docs/images/figureit-shortcuts.png)
+
+Open **Window → Keyboard shortcuts** to remap tool keys or restore the defaults. During a line or connector drag, hold `Ctrl` to bypass snapping temporarily.
+
 ## What works
 
 - **Direct Visual Canvas**: Native SVG artboard with live drag, resize, rotate, endpoint reshaping, smart alignment and 15-degree line snapping, a temporary `Ctrl` snap bypass, and numeric inspector controls.
@@ -12,6 +26,7 @@ FigureIt is a privacy-conscious desktop editor for TikZ figures. It combines dir
 - **Universal Shape Line Patterns**: Solid, dashed (`---`), and dotted (`···`) border strokes on all primitive shapes as well as lines and connectors.
 - **In-Place Live Text Editing & Multi-Line Typography**: Double-click any shape or text box to edit text in-place without ghosting; multi-line text with `\\` and `align=center|left|right`; rich typography toolbar for font family (Modern Sans, LaTeX Serif, Monospace Code), font size ($6\dots96\text{pt}$), bold (`\textbf`), italic (`\textit`), strikethrough (`\sout`), math mode (`$...$`), and horizontal/vertical alignments.
 - **Project and standalone `.tex` workflows**: **Open project** restores a FigureIt folder with its local Git history, while **Open .tex** and canvas drag-and-drop import `.tex`, `.tikz`, and `.latex` files without fabricating a project. `Cmd+O` opens a project on desktop and a standalone file on browser/mobile; `Cmd+S` exports the current source.
+- **PPTX & PDF import**: Dropping or opening a `.pptx` file converts slide shapes, text boxes, embedded images, connectors, and theme colors into editable scene objects grouped per slide; a `.pdf` file imports each page as a high-resolution image object placed on the artboard. Both require a project (embedded media becomes project assets) and are isolated in a dedicated importer module that loads only when an import runs.
 - **Custom Artboard Sizing**: Standard presets (16:9, IEEE column, Square, Banner) plus direct manual pixel width and height inputs with live centimeter readouts and a **Fit width (cm)** control that scales the whole figure to a paper column width.
 - **Academic Figure Extras**: Dimension annotations (`|-|` measure lines with editable length labels), PNG export at 300/600 dpi for journals that require raster, and a compile wrapper that loads the TikZ libraries papers rely on (`patterns`, `decorations.pathreplacing`, `decorations.markings`, `fit`, `backgrounds`, `angles`, `quotes`, `arrows`, `intersections`).
 - **Layer & Multi-Selection Tools**: Marquee selection, collective proportional resize and rotation, layer tree with grouping, visibility, reversible locking, reordering, duplication, opacity, fill/stroke palette, gradients, and align/distribute actions.

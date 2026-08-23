@@ -7,6 +7,9 @@ const RULES = [
   {
     name: 'absolute-home-path',
     pattern: /(?:\/(?:Users|home)\/[^\s"'`<>]+|[A-Za-z]:\\Users\\[^\s"'`<>]+|file:\/\/[^\s"'`<>]+)/g,
+    // Emscripten's built-in fake $HOME inside bundled wasm runtimes (pdf.js
+    // worker); a fixed placeholder, never host identity.
+    allow: (match) => match === '/home/web_user',
   },
   {
     name: 'private-key',
@@ -39,6 +42,7 @@ export function scanText(file, text) {
   for (const rule of RULES) {
     rule.pattern.lastIndex = 0
     for (const match of text.matchAll(rule.pattern)) {
+      if (rule.allow?.(match[0])) continue
       findings.push({
         file: file.replaceAll('\\', '/'),
         line: lineNumber(text, match.index ?? 0),
