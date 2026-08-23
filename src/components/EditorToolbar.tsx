@@ -160,6 +160,9 @@ const commonShortcuts = [
   ["Copy / paste", "⌘/Ctrl C · ⌘/Ctrl V"],
   ["Duplicate", "⌘/Ctrl D"],
   ["Group / ungroup", "⌘/Ctrl G · ⇧⌘/Ctrl G"],
+  ["Flip horizontal / vertical", "⇧ H · ⇧ V"],
+  ["Rotate selection…", "⇧ R"],
+  ["Scale selection…", "⇧ S"],
   ["Disable snapping while dragging", "Ctrl"],
 ];
 

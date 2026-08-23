@@ -51,6 +51,15 @@ import {
   type SmartGuide,
 } from "./editor/interaction";
 import { EditorToolbar, KeyboardShortcutsDialog } from "./components/EditorToolbar";
+import { TransformDialog, type PivotPreference, type TransformMode } from "./components/TransformDialog";
+import {
+  expandTransformTargets,
+  flipHorizontal,
+  flipVertical,
+  rotateAroundPivot,
+  scaleAroundPivot,
+  selectionBounds,
+} from "./editor/transforms";
 import { detectImportKind, importFile } from "./importers";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { LayersPanel } from "./components/LayersPanel";
@@ -68,6 +77,20 @@ const loadToolShortcuts = (): ToolShortcuts => {
     return normalizeToolShortcuts(JSON.parse(window.localStorage.getItem(shortcutStorageKey) ?? "null"));
   } catch {
     return { ...DEFAULT_TOOL_SHORTCUTS };
+  }
+};
+
+const pivotStorageKey = "figureit.transform-pivots";
+const loadPivotPreferences = (): Record<TransformMode, PivotPreference> => {
+  const fallback: Record<TransformMode, PivotPreference> = { rotate: "selection", scale: "selection" };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(pivotStorageKey) ?? "null") as Partial<Record<TransformMode, PivotPreference>> | null;
+    return {
+      rotate: parsed?.rotate === "artboard" ? "artboard" : fallback.rotate,
+      scale: parsed?.scale === "artboard" ? "artboard" : fallback.scale,
+    };
+  } catch {
+    return fallback;
   }
 };
 
@@ -630,6 +653,8 @@ function App() {
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 800, height: 520 });
   const [pngDpi, setPngDpi] = useState(300);
   const [fitWidthCm, setFitWidthCm] = useState(8.8);
+  const [transformDialog, setTransformDialog] = useState<TransformMode | null>(null);
+  const [pivotPrefs, setPivotPrefs] = useState<Record<TransformMode, PivotPreference>>(loadPivotPreferences);
 
   const svg = useRef<SVGSVGElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -741,6 +766,41 @@ function App() {
     setHistory((old) => commitHistory(old, result.document));
     persist(result.document);
     setNotice(label);
+  };
+
+  const chosenTargets = () =>
+    selected
+      .map((selectedId) => find(doc.nodes, selectedId))
+      .filter((node): node is SceneNode => Boolean(node) && node!.kind !== "raw" && !node!.locked);
+
+  const applyFlip = (axis: "horizontal" | "vertical") => {
+    const targets = expandTransformTargets(chosenTargets());
+    const bounds = selectionBounds(targets);
+    if (!targets.length || !bounds) return setNotice("Selection cannot be flipped");
+    const changes = targets.map((node) =>
+      axis === "horizontal" ? flipHorizontal(node, bounds.centerX) : flipVertical(node, bounds.centerY),
+    );
+    transact(axis === "horizontal" ? "Flipped selection horizontally" : "Flipped selection vertically", changes.map((change, index) => ({ type: "update_properties" as const, id: targets[index]!.id, ...change })));
+  };
+
+  const openTransformDialog = (mode: TransformMode) => {
+    if (!chosenTargets().length) return setNotice("Selection cannot be transformed");
+    setTransformDialog(mode);
+  };
+
+  const applyNumericTransform = (mode: TransformMode, value: number) => {
+    setTransformDialog(null);
+    const targets = expandTransformTargets(chosenTargets());
+    const bounds = selectionBounds(targets);
+    if (!targets.length || !bounds) return setNotice("Selection cannot be transformed");
+    const pivot =
+      pivotPrefs[mode] === "artboard"
+        ? { x: canvasSize.width / PX_PER_CM / 2, y: canvasSize.height / PX_PER_CM / 2 }
+        : { x: bounds.centerX, y: bounds.centerY };
+    const changes = targets.map((node) =>
+      mode === "rotate" ? rotateAroundPivot(node, value, pivot) : scaleAroundPivot(node, value, pivot),
+    );
+    transact(mode === "rotate" ? `Rotated selection ${value}°` : `Scaled selection ${value}×`, changes.map((change, index) => ({ type: "update_properties" as const, id: targets[index]!.id, ...change })));
   };
 
   const importExternalFile = async (file: File) => {
@@ -1232,6 +1292,14 @@ function App() {
   }, [toolShortcuts]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(pivotStorageKey, JSON.stringify(pivotPrefs));
+    } catch {
+      // Storage can be unavailable; the preference still applies for this session.
+    }
+  }, [pivotPrefs]);
+
+  useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ",") {
         event.preventDefault();
@@ -1243,7 +1311,7 @@ function App() {
       const eventTarget = event.target as HTMLElement | null;
       if (eventTarget && ["INPUT", "TEXTAREA", "SELECT"].includes(eventTarget.tagName)) return;
       const next = shortcutKeyToTool[event.key.toLowerCase()];
-      if (!event.metaKey && !event.ctrlKey && !event.altKey && next) {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && next) {
         if (next === "select" || next === "connector" || next === "path") {
           setTool(next);
           setNotice(
@@ -1312,7 +1380,19 @@ function App() {
         setDraftPoints([]);
         setSelected([node.id]);
         setTool("select");
-      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      } else if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "h" && selected.length) {
+        event.preventDefault();
+        applyFlip("horizontal");
+      } else if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "v" && selected.length) {
+        event.preventDefault();
+        applyFlip("vertical");
+      } else if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "r" && selected.length) {
+        event.preventDefault();
+        openTransformDialog("rotate");
+      } else if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "s" && selected.length) {
+        event.preventDefault();
+        openTransformDialog("scale");
+      } else if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "s") {
         event.preventDefault();
         saveTexFile();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
@@ -1732,6 +1812,51 @@ function App() {
               <div className="menu-divider" />
               <button
                 role="menuitem"
+                disabled={!selected.length}
+                onClick={() => {
+                  applyFlip("horizontal");
+                  setWindowMenuOpen(false);
+                }}
+              >
+                <span>Flip horizontal</span>
+                <kbd>⇧ H</kbd>
+              </button>
+              <button
+                role="menuitem"
+                disabled={!selected.length}
+                onClick={() => {
+                  applyFlip("vertical");
+                  setWindowMenuOpen(false);
+                }}
+              >
+                <span>Flip vertical</span>
+                <kbd>⇧ V</kbd>
+              </button>
+              <button
+                role="menuitem"
+                disabled={!selected.length}
+                onClick={() => {
+                  openTransformDialog("rotate");
+                  setWindowMenuOpen(false);
+                }}
+              >
+                <span>Rotate…</span>
+                <kbd>⇧ R</kbd>
+              </button>
+              <button
+                role="menuitem"
+                disabled={!selected.length}
+                onClick={() => {
+                  openTransformDialog("scale");
+                  setWindowMenuOpen(false);
+                }}
+              >
+                <span>Scale…</span>
+                <kbd>⇧ S</kbd>
+              </button>
+              <div className="menu-divider" />
+              <button
+                role="menuitem"
                 onClick={() => {
                   setShortcutEditorOpen(true);
                   setWindowMenuOpen(false);
@@ -1829,6 +1954,15 @@ function App() {
           onChange={changeToolShortcut}
           onReset={() => setToolShortcuts({ ...DEFAULT_TOOL_SHORTCUTS })}
           onClose={() => setShortcutEditorOpen(false)}
+        />
+      )}
+      {transformDialog && (
+        <TransformDialog
+          mode={transformDialog}
+          pivotPreference={pivotPrefs[transformDialog]}
+          onApply={(value) => applyNumericTransform(transformDialog, value)}
+          onPivotPreferenceChange={(preference) => setPivotPrefs((old) => ({ ...old, [transformDialog]: preference }))}
+          onClose={() => setTransformDialog(null)}
         />
       )}
       <div className="optionsbar" aria-label="Tool options">
