@@ -64,6 +64,12 @@ describe("detectImportKind", () => {
     expect(detectImportKind("paper.PDF")).toBe("pdf");
     expect(detectImportKind("figure.tex")).toBeUndefined();
   });
+
+  it("rejects oversized imports before reading them", async () => {
+    const file = new File([new Uint8Array([1])], "large.pptx");
+    Object.defineProperty(file, "size", { value: 50_000_001 });
+    await expect(importFile(file, { targetWidthCm: 10, targetHeightCm: 10 })).rejects.toThrow("file_too_large");
+  });
 });
 
 describe("pptx import", () => {

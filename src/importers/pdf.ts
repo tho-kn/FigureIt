@@ -17,8 +17,8 @@ const canvasBlob = (canvas: HTMLCanvasElement, type: string, quality?: number): 
 export const importPdf = async (file: File, options: ImportOptions): Promise<ImportOutcome> => {
   const data = new Uint8Array(await file.arrayBuffer());
   const loadingTask = getDocument({ data });
-  const pdf = await loadingTask.promise;
   try {
+    const pdf = await loadingTask.promise;
     const warnings: string[] = [];
     if (pdf.numPages > MAX_PAGES) warnings.push(`Imported the first ${MAX_PAGES} of ${pdf.numPages} pages`);
     const pageCount = Math.min(pdf.numPages, MAX_PAGES);
@@ -100,6 +100,6 @@ export const importPdf = async (file: File, options: ImportOptions): Promise<Imp
       warnings: [...new Set(warnings)],
     };
   } finally {
-    void loadingTask.destroy();
+    await loadingTask.destroy();
   }
 };

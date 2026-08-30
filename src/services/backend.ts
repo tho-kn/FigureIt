@@ -17,6 +17,8 @@ export type ClaudeStatus =
 const source = String.raw`\begin{tikzpicture}
 \end{tikzpicture}
 `
+export const MAX_SOURCE_BYTES = 1_000_000
+export const MAX_ASSET_BYTES = 1_000_000
 const memory = new Map<string, Project>()
 const localProjectKey = 'figureit:local-project'
 let nextHandle = 1
@@ -41,6 +43,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 function remember(project: Project) {
+  memory.clear()
   memory.set(project.handle, project)
   if (isMobile()) localStorage.setItem(localProjectKey, JSON.stringify({ title: project.title, source: project.source }))
 }
@@ -72,7 +75,7 @@ export async function openProject(): Promise<Project> {
 }
 
 export async function saveProject(handle: string, nextSource: string): Promise<void> {
-  if (nextSource.length > 1_000_000) throw new Error('invalid_request')
+  if (nextSource.length > MAX_SOURCE_BYTES) throw new Error('invalid_request')
   if (desktopFeaturesAvailable()) { await call<void>('save_project', { handle, source: nextSource }); return }
   const project = memory.get(handle)
   if (!project) throw new Error('project_unavailable')
@@ -81,7 +84,7 @@ export async function saveProject(handle: string, nextSource: string): Promise<v
 
 export async function writeAsset(handle: string, name: string, bytes: Uint8Array): Promise<void> {
   safeAsset(name)
-  if (bytes.byteLength > 1_000_000) throw new Error('invalid_request')
+  if (bytes.byteLength > MAX_ASSET_BYTES) throw new Error('invalid_request')
   if (desktopFeaturesAvailable()) { await call<void>('write_asset', { handle, name, bytes: [...bytes] }); return }
   if (!memory.has(handle)) throw new Error('project_unavailable')
 }

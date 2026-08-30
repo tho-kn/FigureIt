@@ -11,6 +11,14 @@ describe('backend fallback', () => {
     expect(JSON.stringify(project)).not.toMatch(/(?:^|[\\/])Users(?:[\\/]|$)/)
   })
 
+  it('retains only the active browser project', async () => {
+    const previous = await createProject()
+    const active = await createProject()
+    const empty = '\\begin{tikzpicture}\\end{tikzpicture}'
+    await expect(saveProject(previous.handle, empty)).rejects.toThrow('project_unavailable')
+    await expect(saveProject(active.handle, empty)).resolves.toBeUndefined()
+  })
+
   it('persists the manual editor locally on Android and disables desktop-only compilation', async () => {
     const values = new Map<string, string>()
     vi.stubGlobal('navigator', { userAgent: 'Android' })

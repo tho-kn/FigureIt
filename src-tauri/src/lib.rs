@@ -3,13 +3,16 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver},
         Mutex,
     },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
 #[cfg(desktop)]
@@ -22,6 +25,10 @@ const COMPILE_WRAPPER: &str = "\\documentclass{standalone}\n\\usepackage{tikz}\n
 const ASSETS: &str = "assets";
 const MAX_SOURCE_BYTES: usize = 1_000_000;
 const MAX_REQUEST_BYTES: usize = 100_000;
+const MAX_PDF_BYTES: u64 = 50_000_000;
+const COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
+const CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(120);
+const CLAUDE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_STREAM_FLAGS: &[&str] = &[
     "--print",
     "--input-format",
@@ -116,13 +123,18 @@ struct ClaudeConversation {
     _workspace: tempfile::TempDir,
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    lines: Option<Receiver<Result<String, ()>>>,
+    reader: Option<JoinHandle<()>>,
 }
 
 impl Drop for ClaudeConversation {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.lines.take();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -132,13 +144,23 @@ struct ClaudeStore {
     login: Mutex<Option<Child>>,
 }
 
+impl Drop for ClaudeStore {
+    fn drop(&mut self) {
+        if let Ok(slot) = self.login.get_mut() {
+            if let Some(mut child) = slot.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
 impl ProjectStore {
     #[cfg(desktop)]
     fn insert(&self, info: &ProjectInfo, path: PathBuf) -> Result<(), BackendError> {
-        self.0
-            .lock()
-            .map_err(|_| BackendError::OperationFailed)?
-            .insert(info.handle.clone(), path);
+        let mut projects = self.0.lock().map_err(|_| BackendError::OperationFailed)?;
+        projects.clear();
+        projects.insert(info.handle.clone(), path);
         Ok(())
     }
     fn get(&self, handle: &str) -> Result<PathBuf, BackendError> {
@@ -179,13 +201,23 @@ fn source_path(project: &Path) -> PathBuf {
     project.join(SOURCE)
 }
 
-fn read_source(project: &Path) -> Result<String, BackendError> {
-    let source =
-        fs::read_to_string(source_path(project)).map_err(|_| BackendError::OperationFailed)?;
+fn read_source_file(path: &Path) -> Result<String, BackendError> {
+    if fs::metadata(path)
+        .map_err(|_| BackendError::OperationFailed)?
+        .len()
+        > MAX_SOURCE_BYTES as u64
+    {
+        return Err(BackendError::InvalidRequest);
+    }
+    let source = fs::read_to_string(path).map_err(|_| BackendError::OperationFailed)?;
     if source.len() > MAX_SOURCE_BYTES {
         return Err(BackendError::InvalidRequest);
     }
     Ok(source)
+}
+
+fn read_source(project: &Path) -> Result<String, BackendError> {
+    read_source_file(&source_path(project))
 }
 
 fn atomic_write(path: &Path, contents: &str) -> Result<(), BackendError> {
@@ -224,7 +256,7 @@ pub fn open_project_at(path: PathBuf) -> Result<ProjectInfo, BackendError> {
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let project = canonical_dir(parent)?;
         let _ = fs::create_dir_all(project.join(ASSETS));
-        let content = fs::read_to_string(&path).map_err(|_| BackendError::OperationFailed)?;
+        let content = read_source_file(&path)?;
         let title = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -248,7 +280,7 @@ pub fn open_project_at(path: PathBuf) -> Result<ProjectInfo, BackendError> {
                 if p.extension()
                     .is_some_and(|ext| ext == "tex" || ext == "tikz")
                 {
-                    if let Ok(c) = fs::read_to_string(&p) {
+                    if let Ok(c) = read_source_file(&p) {
                         found_content = Some(c);
                         break;
                     }
@@ -616,7 +648,15 @@ fn commit_list(project: &Path) -> Result<Vec<CommitInfo>, BackendError> {
     ensure_git(project)?;
     let output = git(
         project,
-        &["log", "--format=%H%x1f%cI%x1f%s", "--", SOURCE, ASSETS],
+        &[
+            "log",
+            "-n",
+            "200",
+            "--format=%H%x1f%cI%x1f%s",
+            "--",
+            SOURCE,
+            ASSETS,
+        ],
     )?;
     if !output.status.success() {
         return Ok(vec![]);
@@ -780,6 +820,31 @@ fn open_project(
     Err(BackendError::SelectionRequired)
 }
 
+fn command_status_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[tauri::command]
 fn compile_project(
     app: AppHandle,
@@ -812,20 +877,30 @@ fn compile_project(
             message: "Tectonic is unavailable".into(),
         });
     };
-    let output = match Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(["--untrusted", "--outdir", "out", COMPILE_SOURCE])
         .current_dir(temp.path())
         .env_clear()
-        .output()
-    {
-        Ok(output) => output,
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = match command_status_with_timeout(&mut command, COMPILE_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            return Ok(CompileResult::Failed {
+                diagnostics: vec![CompileDiagnostic {
+                    line: None,
+                    message: "Tectonic could not compile this source".into(),
+                }],
+            })
+        }
         Err(_) => {
             return Ok(CompileResult::Unavailable {
                 message: "Tectonic is unavailable".into(),
             })
         }
     };
-    if !output.status.success() {
+    if !status.success() {
         return Ok(CompileResult::Failed {
             diagnostics: vec![CompileDiagnostic {
                 line: None,
@@ -833,8 +908,15 @@ fn compile_project(
             }],
         });
     }
-    let pdf = fs::read(temp.path().join("out").join("figureit.pdf"))
-        .map_err(|_| BackendError::OperationFailed)?;
+    let pdf_path = temp.path().join("out").join("figureit.pdf");
+    if fs::metadata(&pdf_path)
+        .map_err(|_| BackendError::OperationFailed)?
+        .len()
+        > MAX_PDF_BYTES
+    {
+        return Err(BackendError::OperationFailed);
+    }
+    let pdf = fs::read(pdf_path).map_err(|_| BackendError::OperationFailed)?;
     Ok(CompileResult::Ok {
         pdf,
         diagnostics: vec![],
@@ -855,6 +937,55 @@ fn valid_conversation(handle: &str) -> bool {
         && handle
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len() + take > limit {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "line too large"));
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if bytes.last() == Some(&b'\n') {
+            break;
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8"))
+}
+
+fn claude_line_channel(stdout: ChildStdout) -> (Receiver<Result<String, ()>>, JoinHandle<()>) {
+    let (sender, receiver) = mpsc::sync_channel(16);
+    let reader = thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            match read_bounded_line(&mut stdout, MAX_REQUEST_BYTES) {
+                Ok(Some(line)) => {
+                    if sender.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => {
+                    let _ = sender.send(Err(()));
+                    break;
+                }
+            }
+        }
+    });
+    (receiver, reader)
 }
 
 fn spawn_claude(app: &AppHandle) -> Result<ClaudeConversation, BackendError> {
@@ -885,11 +1016,13 @@ fn spawn_claude(app: &AppHandle) -> Result<ClaudeConversation, BackendError> {
         .map_err(|_| BackendError::OperationFailed)?;
     let stdin = child.stdin.take().ok_or(BackendError::OperationFailed)?;
     let stdout = child.stdout.take().ok_or(BackendError::OperationFailed)?;
+    let (lines, reader) = claude_line_channel(stdout);
     Ok(ClaudeConversation {
         _workspace: workspace,
         child,
         stdin,
-        stdout: BufReader::new(stdout),
+        lines: Some(lines),
+        reader: Some(reader),
     })
 }
 
@@ -912,15 +1045,18 @@ fn claude_turn(
         .stdin
         .flush()
         .map_err(|_| BackendError::OperationFailed)?;
+    let started = Instant::now();
     for _ in 0..256 {
-        let mut line = String::new();
-        let count = conversation
-            .stdout
-            .read_line(&mut line)
+        let remaining = CLAUDE_TURN_TIMEOUT
+            .checked_sub(started.elapsed())
+            .ok_or(BackendError::OperationFailed)?;
+        let line = conversation
+            .lines
+            .as_ref()
+            .ok_or(BackendError::OperationFailed)?
+            .recv_timeout(remaining)
+            .map_err(|_| BackendError::OperationFailed)?
             .map_err(|_| BackendError::OperationFailed)?;
-        if count == 0 || line.len() > MAX_REQUEST_BYTES {
-            return Err(BackendError::OperationFailed);
-        }
         let event: Value =
             serde_json::from_str(&line).map_err(|_| BackendError::OperationFailed)?;
         if event.get("type").and_then(Value::as_str) == Some("result") {
@@ -1022,14 +1158,13 @@ pub enum ClaudeStatus {
 }
 
 fn claude_binary_present() -> bool {
-    Command::new("claude")
+    let mut command = Command::new("claude");
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    matches!(command_status_with_timeout(&mut command, CLAUDE_PROBE_TIMEOUT), Ok(Some(status)) if status.success())
 }
 
 fn claude_env_credential_present() -> bool {
@@ -1043,14 +1178,13 @@ fn claude_env_credential_present() -> bool {
 }
 
 fn claude_auth_status_ok() -> bool {
-    Command::new("claude")
+    let mut command = Command::new("claude");
+    command
         .args(["auth", "status"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    matches!(command_status_with_timeout(&mut command, CLAUDE_PROBE_TIMEOUT), Ok(Some(status)) if status.success())
 }
 
 fn credentials_json_looks_valid(contents: &str) -> bool {
@@ -1184,6 +1318,18 @@ mod tests {
             .expect("serialize")
             .contains(temp.path().to_string_lossy().as_ref()));
     }
+
+    #[test]
+    fn oversized_source_is_rejected_before_it_is_read() {
+        let temp = tempfile::tempdir().expect("test temp directory");
+        let path = temp.path().join("large.tex");
+        fs::write(&path, vec![b'x'; MAX_SOURCE_BYTES + 1]).expect("write source");
+        assert!(matches!(
+            open_project_at(path),
+            Err(BackendError::InvalidRequest)
+        ));
+    }
+
     #[test]
     fn asset_names_cannot_escape_assets() {
         let temp = tempfile::tempdir().expect("test temp directory");
@@ -1265,13 +1411,43 @@ mod tests {
             .expect("child");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
+        let (lines, reader) = claude_line_channel(stdout);
         let process_id = child.id();
         drop(ClaudeConversation {
             _workspace: workspace,
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            lines: Some(lines),
+            reader: Some(reader),
         });
+        assert!(!Command::new("kill")
+            .args(["-0", &process_id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("process check")
+            .success());
+    }
+
+    #[test]
+    fn claude_stream_lines_are_bounded_before_allocation() {
+        let mut valid = BufReader::new(std::io::Cursor::new(b"{\"type\":\"result\"}\n"));
+        assert_eq!(
+            read_bounded_line(&mut valid, 64).expect("valid line"),
+            Some("{\"type\":\"result\"}\n".into())
+        );
+        let mut oversized = BufReader::new(std::io::Cursor::new(vec![b'x'; 65]));
+        assert!(read_bounded_line(&mut oversized, 64).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_claude_store_ends_login_process() {
+        let store = ClaudeStore::default();
+        let child = Command::new("sleep").arg("30").spawn().expect("child");
+        let process_id = child.id();
+        *store.login.lock().expect("login lock") = Some(child);
+        drop(store);
         assert!(!Command::new("kill")
             .args(["-0", &process_id.to_string()])
             .stdout(Stdio::null())

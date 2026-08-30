@@ -5,6 +5,11 @@ import type { ImportOptions, ImportOutcome, ImportedAsset } from "./types";
 const EMU_PER_CM = 360000;
 const MAX_SLIDES = 30;
 const MAX_ASSET_BYTES = 900_000;
+const MAX_TOTAL_ASSET_BYTES = 25_000_000;
+const MAX_ARCHIVE_ENTRIES = 20_000;
+const MAX_ARCHIVE_BYTES = 100_000_000;
+const MAX_XML_BYTES = 5_000_000;
+const MAX_NODES = 10_000;
 
 type Box = { x: number; y: number; w: number; h: number };
 type AxisMap = { a: number; b: number };
@@ -16,6 +21,7 @@ const identityMap = (): CoordMap => ({ x: { a: 0, b: 1 }, y: { a: 0, b: 1 } });
 const applyAxis = (map: AxisMap, value: number) => map.a + map.b * value;
 const emuCm = (value: number) => value / EMU_PER_CM;
 const r6 = (value: number) => Number(value.toFixed(6));
+const expandedSize = (entry: unknown): number => (entry as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0;
 
 const kids = (el: Element | undefined, name: string): Element[] =>
   el ? Array.from(el.children).filter((child) => child.localName === name) : [];
@@ -42,7 +48,10 @@ const parseXml = (text: string): Document => {
 const xmlText = async (zip: JSZip, path: string): Promise<string> => {
   const file = zip.file(path);
   if (!file) throw new Error(`missing_${path}`);
-  return file.async("string");
+  if (expandedSize(file) > MAX_XML_BYTES) throw new Error("xml_too_large");
+  const text = await file.async("string");
+  if (text.length > MAX_XML_BYTES) throw new Error("xml_too_large");
+  return text;
 };
 
 const resolveSchemeToken = (token: string, theme: Theme): string | undefined => {
@@ -182,6 +191,8 @@ type SlideContext = {
   rels: Map<string, string>;
   zip: JSZip;
   assets: ImportedAsset[];
+  assetsByPath: Map<string, ImportedAsset | null>;
+  budget: { nodes: number; assetBytes: number };
   warnings: string[];
 };
 
@@ -195,17 +206,15 @@ const assetForEmbed = async (context: SlideContext, embedId: string | undefined)
   const target = embedId ? context.rels.get(embedId) : undefined;
   if (!target) return undefined;
   const path = target.includes("media/") ? `ppt/${target.slice(target.indexOf("media/")).replace(/^\//, "")}` : undefined;
+  if (path && context.assetsByPath.has(path)) return context.assetsByPath.get(path) ?? undefined;
   const file = path ? context.zip.file(path) : undefined;
   if (!file) return undefined;
   const bytes = await file.async("uint8array");
-  if (bytes.byteLength > MAX_ASSET_BYTES) {
+  if (bytes.byteLength > MAX_ASSET_BYTES || context.budget.assetBytes + bytes.byteLength > MAX_TOTAL_ASSET_BYTES) {
     context.warnings.push("Skipped an embedded image above the project asset size limit");
+    context.assetsByPath.set(path!, null);
     return undefined;
   }
-  const existing = context.assets.find(
-    (asset) => asset.bytes.length === bytes.length && asset.bytes.every((byte, index) => byte === bytes[index]),
-  );
-  if (existing) return existing;
   let index = context.assets.length + 1;
   let name = `slide${context.slideNumber}-media${index}.${mediaExtension(path!)}`;
   while (context.assets.some((asset) => asset.name === name)) {
@@ -214,6 +223,8 @@ const assetForEmbed = async (context: SlideContext, embedId: string | undefined)
   }
   const asset: ImportedAsset = { name, bytes };
   context.assets.push(asset);
+  context.budget.assetBytes += bytes.byteLength;
+  context.assetsByPath.set(path!, asset);
   return asset;
 };
 
@@ -335,14 +346,19 @@ const walkTree = async (
   placer: Placer,
 ): Promise<{ nodes: SceneNode[]; unsupported: number }> => {
   const nodes: SceneNode[] = [];
+  const append = (node: SceneNode) => {
+    context.budget.nodes += 1;
+    if (context.budget.nodes > MAX_NODES) throw new Error("too_many_nodes");
+    nodes.push(node);
+  };
   let unsupported = 0;
   for (const child of Array.from(tree.children)) {
     if (child.localName === "sp" || child.localName === "cxnSp") {
       const built = await buildShape(child, child.localName, coordMap, context, placer);
-      if (built) nodes.push(built);
+      if (built) append(built);
     } else if (child.localName === "pic") {
       const built = await buildShape(child, "pic", coordMap, context, placer);
-      if (built) nodes.push(built);
+      if (built) append(built);
     } else if (child.localName === "grpSp") {
       const groupProperties = kid(child, "grpSpPr");
       const inner = childMap(coordMap, kid(groupProperties, "xfrm"));
@@ -354,7 +370,7 @@ const walkTree = async (
         const right = Math.max(...nested.nodes.map((node) => (node.geometry?.x ?? 0) + (node.geometry?.width ?? 0)));
         const bottom = Math.max(...nested.nodes.map((node) => (node.geometry?.y ?? 0) + (node.geometry?.height ?? 0)));
         const groupFrame = frameOf(kid(groupProperties, "xfrm"));
-        nodes.push(
+        append(
           makeNode("group", drawingName(child, "grpSp") ?? "Group", {
             geometry: { x: r6(left), y: r6(top), width: r6(right - left), height: r6(bottom - top) },
             children: nested.nodes,
@@ -383,6 +399,13 @@ const parseRels = (relsDocument: Document): Map<string, string> => {
 
 export const importPptx = async (file: File, options: ImportOptions): Promise<ImportOutcome> => {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error("archive_too_large");
+  let expandedBytes = 0;
+  for (const entry of entries) {
+    expandedBytes += expandedSize(entry);
+    if (expandedBytes > MAX_ARCHIVE_BYTES) throw new Error("archive_too_large");
+  }
   const presentation = parseXml(await xmlText(zip, "ppt/presentation.xml"));
   const slideSize = descendant(presentation.documentElement, "sldSz");
   const slideWidthCm = emuCm(numAttr(slideSize, "cx") ?? 12192000);
@@ -420,6 +443,8 @@ export const importPptx = async (file: File, options: ImportOptions): Promise<Im
 
   const operations: SceneNode[] = [];
   const assets: ImportedAsset[] = [];
+  const assetsByPath = new Map<string, ImportedAsset | null>();
+  const budget = { nodes: 0, assetBytes: 0 };
 
   for (const [index, slide] of selected.entries()) {
     const context: SlideContext = {
@@ -428,6 +453,8 @@ export const importPptx = async (file: File, options: ImportOptions): Promise<Im
       rels: new Map(),
       zip,
       assets,
+      assetsByPath,
+      budget,
       warnings,
     };
     try {

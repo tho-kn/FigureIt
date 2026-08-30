@@ -80,7 +80,7 @@ function LayerRow({
   depth: number;
   ancestorVisible: boolean;
   ancestorLocked: boolean;
-  selected: string[];
+  selected: ReadonlySet<string>;
   collapsedGroups: Set<string>;
   search: string;
   editingNameId: string | null;
@@ -101,7 +101,7 @@ function LayerRow({
     <Fragment key={node.id}>
       {matchesSearch && (
         <div
-          className={`layer ${selected.includes(node.id) ? "selected" : ""}`}
+          className={`layer ${selected.has(node.id) ? "selected" : ""}`}
           draggable={!node.locked}
           onDragStart={(e) => {
             e.dataTransfer.setData("text/plain", node.id);
@@ -246,6 +246,7 @@ export function LayersPanel({
   onAlign,
   onDistribute,
 }: LayersPanelProps) {
+  const selectedSet = new Set(selected);
   return (
     <>
       <div className="panel-title">
@@ -271,7 +272,7 @@ export function LayersPanel({
             depth={0}
             ancestorVisible={true}
             ancestorLocked={false}
-            selected={selected}
+            selected={selectedSet}
             collapsedGroups={collapsedGroups}
             search={search}
             editingNameId={editingNameId}

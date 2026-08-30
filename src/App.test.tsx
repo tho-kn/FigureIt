@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const backend = vi.hoisted(() => ({
+  MAX_ASSET_BYTES: 1_000_000, MAX_SOURCE_BYTES: 1_000_000,
   desktopFeaturesAvailable: () => true, createProject: vi.fn(async () => ({ handle: 'test', title: 'Diagram', source: String.raw`\begin{tikzpicture}
 \shade (0,0) circle (1);
 \end{tikzpicture}` })), openProject: vi.fn(), saveProject: vi.fn(async () => undefined), checkpointProject: vi.fn(async () => undefined), writeAsset: vi.fn(async () => undefined), listHistory: vi.fn(async () => []), restoreCommit: vi.fn(), compileProject: vi.fn(), askClaude: vi.fn(), resetClaudeConversation: vi.fn(async () => undefined), claudeStatus: vi.fn(async (): Promise<import('./services/backend').ClaudeStatus> => ({ status: 'ready', method: 'oauth' })), claudeLogin: vi.fn(async () => true),
@@ -44,7 +45,7 @@ describe('FigureIt scene editor', () => {
     Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => false })
     const handle = screen.getByLabelText('Resize handle 1')
     fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 }); fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 138, clientY: 100 })
-    const shape = screen.getAllByLabelText('Rectangle').find((element) => element.tagName.toLowerCase() === 'g')!; expect(Number(shape.querySelector('rect:not(.selection-box):not(.resize-handle)')?.getAttribute('width'))).toBeCloseTo(56.28, 1)
+    const shape = screen.getAllByLabelText('Rectangle').find((element) => element.tagName.toLowerCase() === 'g')!; await waitFor(() => expect(Number(shape.querySelector('rect:not(.selection-box):not(.resize-handle)')?.getAttribute('width'))).toBeCloseTo(56.28, 1))
     fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 138, clientY: 100 })
     expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toContain('(3.511')
   })
@@ -53,7 +54,7 @@ describe('FigureIt scene editor', () => {
     const canvas = screen.getByLabelText('Figure artboard'); const shape = screen.getAllByLabelText('Rectangle').find((element) => element.tagName.toLowerCase() === 'g')!
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 400, bottom: 260, width: 400, height: 260, x: 0, y: 0, toJSON: () => ({}) }); const capture = vi.fn(); Object.assign(canvas, { setPointerCapture: capture, hasPointerCapture: () => false })
     fireEvent.pointerDown(shape, { pointerId: 7, clientX: 100, clientY: 100 }); fireEvent.pointerMove(canvas, { pointerId: 7, clientX: 150, clientY: 125 })
-    expect(capture).toHaveBeenCalledWith(7); expect(screen.getAllByLabelText('Rectangle').find((element) => element.tagName.toLowerCase() === 'g')?.getAttribute('transform')).toContain('translate(100 50)')
+    expect(capture).toHaveBeenCalledWith(7); await waitFor(() => expect(screen.getAllByLabelText('Rectangle').find((element) => element.tagName.toLowerCase() === 'g')?.getAttribute('transform')).toContain('translate(100 50)'))
     fireEvent.pointerUp(canvas, { pointerId: 7, clientX: 150, clientY: 125 }); expect(screen.getByLabelText<HTMLInputElement>('X position').value).toBe('4.146'); expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).not.toContain('shift=')
   })
   it('resizes a rotated shape along its local axis', async () => {
@@ -129,6 +130,12 @@ describe('FigureIt scene editor', () => {
   it('applies source drafts and undo/redo scene edits', async () => {
     const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Rectangle' })); await user.click(screen.getByRole('button', { name: 'Undo' })); expect(screen.getAllByLabelText('Rectangle')).toHaveLength(1); await user.click(screen.getByRole('button', { name: 'Redo' })); expect(screen.getAllByLabelText('Rectangle')).toHaveLength(2)
     fireEvent.change(screen.getByLabelText('TikZ source'), { target: { value: String.raw`\begin{tikzpicture}\draw (0,0)--(1,1);\end{tikzpicture}` } }); await user.click(screen.getByRole('button', { name: 'Apply source' })); expect(screen.getByText('Source applied')).toBeInTheDocument()
+  })
+  it('coalesces rapid edits to one property into one undo step', async () => {
+    const user = userEvent.setup(); render(<App />); await user.click(screen.getByRole('button', { name: 'Rectangle' }))
+    const input = screen.getByLabelText<HTMLInputElement>('X position'); const original = screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value
+    fireEvent.change(input, { target: { value: '2' } }); fireEvent.change(input, { target: { value: '3' } })
+    await user.click(screen.getByRole('button', { name: 'Undo' })); expect(screen.getByLabelText<HTMLTextAreaElement>('TikZ source').value).toBe(original)
   })
 
   it('draws a persistent snapped connector between shape connection sites', async () => {

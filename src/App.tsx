@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
   anchors,
@@ -6,6 +6,7 @@ import {
   commitHistory,
   connectorAnchorPoint,
   createHistory,
+  findSceneNode,
   flattenRenderableNodes,
   nearestConnectorAnchor,
   parseTikz,
@@ -32,6 +33,8 @@ import {
   createProject,
   desktopFeaturesAvailable,
   listHistory,
+  MAX_ASSET_BYTES,
+  MAX_SOURCE_BYTES,
   openProject,
   resetClaudeConversation,
   restoreCommit,
@@ -69,6 +72,24 @@ import "./App.css";
 
 const blank = String.raw`\begin{tikzpicture}
 \end{tikzpicture}`;
+
+const historyKey = (operations: SceneOperation[]): string | undefined => {
+  if (operations.length !== 1) return undefined;
+  const operation = operations[0];
+  if (!("id" in operation) || typeof operation.id !== "string" || !["move", "transform", "set_metadata", "replace_source", "update_properties"].includes(operation.type)) return undefined;
+  const changed = Object.entries(operation)
+    .filter(([key, value]) => key !== "type" && key !== "id" && value !== undefined)
+    .flatMap(([key, value]) => typeof value === "object" && value !== null ? Object.keys(value).map((nested) => `${key}.${nested}`) : [key])
+    .sort()
+    .join(",");
+  return `${operation.type}:${operation.id}:${changed}`;
+};
+const requestFrame = (callback: FrameRequestCallback): number => typeof window.requestAnimationFrame === "function"
+  ? window.requestAnimationFrame(callback)
+  : window.setTimeout(() => callback(performance.now()), 16);
+const cancelFrame = (frame: number) => typeof window.cancelAnimationFrame === "function"
+  ? window.cancelAnimationFrame(frame)
+  : window.clearTimeout(frame);
 
 
 const shortcutStorageKey = "figureit.tool-shortcuts";
@@ -466,7 +487,6 @@ function AssistantTab({
   const [request, setRequest] = useState("");
   const [isConsulting, setIsConsulting] = useState(false);
   const [scopeToSelection, setScopeToSelection] = useState(false);
-  const [chatLog, setChatLog] = useState<Array<{ role: "user" | "assistant"; text: string; time: string }>>([]);
   const [claudeState, setClaudeState] = useState<ClaudeStatus | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
 
@@ -498,8 +518,6 @@ function AssistantTab({
   const sendRequest = (promptText = request) => {
     if (!promptText.trim() || isConsulting || assistantBlocked) return;
     const scopedDoc = scopeToSelection && selected.length ? { ...doc, nodes: doc.nodes.filter((n) => selected.includes(n.id)) } : doc;
-    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setChatLog((old) => [...old, { role: "user", text: promptText, time }]);
     setIsConsulting(true);
     onNotice("Consulting Claude...");
 
@@ -512,12 +530,10 @@ function AssistantTab({
             text: result.text,
             operations: normalizeClaudeOperations(result.operations as SceneOperation[]),
           });
-          setChatLog((old) => [...old, { role: "assistant", text: result.text, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
           onNotice("Suggestion ready for review");
         } else {
           const msg = result.status === "ok" ? "Assistant suggestion was rejected" : result.message;
           onNotice(msg);
-          setChatLog((old) => [...old, { role: "assistant", text: msg, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
         }
       })
       .catch(() => {
@@ -608,7 +624,7 @@ function AssistantTab({
           </div>
         ) : (
           <p className="empty" style={{ fontSize: "11px" }}>
-            {chatLog.length ? "Ready for next instruction." : "Choose a quick preset or type instructions for Claude."}
+            Choose a quick preset or type instructions for Claude.
           </p>
         )}
       </div>
@@ -661,15 +677,22 @@ function App() {
   const texFileInput = useRef<HTMLInputElement>(null);
   const checkpoint = useRef<number | undefined>(undefined);
   const projectHandle = useRef<string | undefined>(undefined);
+  const pendingSave = useRef<{ handle: string; source: string } | undefined>(undefined);
+  const saveDrain = useRef<Promise<void> | null>(null);
+  const saveFailed = useRef(false);
+  const lastEdit = useRef<{ key: string; at: number } | undefined>(undefined);
+  const mounted = useRef(true);
   const drag = useRef<Drag | null>(null);
+  const dragFrame = useRef<number | undefined>(undefined);
+  const queuedPointer = useRef<{ point: ScenePoint; snap: boolean } | undefined>(undefined);
   const nodes = useMemo(() => flattenRenderableNodes(doc), [doc]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const suggestedIds = useMemo(() => new Set(suggestion?.operations.flatMap((operation) => "id" in operation && typeof operation.id === "string" ? [operation.id] : []) ?? []), [suggestion]);
   const shortcutKeyToTool = useMemo(() => Object.fromEntries(
     TOOL_LABELS.flatMap(([id]) => toolShortcuts[id] ? [[toolShortcuts[id], id]] : []),
   ) as Partial<Record<string, Tool>>, [toolShortcuts]);
 
-  const find = useCallback((list: SceneNode[], nodeId: string): SceneNode | undefined =>
-    list.find((node) => node.id === nodeId) ??
-    list.flatMap((node) => node.children ?? []).map((node) => find([node], nodeId)).find(Boolean), []);
+  const find = findSceneNode;
 
   const groupBounds = useMemo(() => {
     if (selected.length < 2) return null;
@@ -738,19 +761,42 @@ function App() {
   };
 
 
-  const flushCheckpoint = () => {
+  const queueSave = (handle: string, source: string) => {
+    pendingSave.current = { handle, source };
+    if (!saveDrain.current) saveDrain.current = (async () => {
+      saveFailed.current = false;
+      try {
+        while (pendingSave.current) {
+          const next = pendingSave.current;
+          pendingSave.current = undefined;
+          await saveProject(next.handle, next.source);
+        }
+      } catch {
+        pendingSave.current = undefined;
+        saveFailed.current = true;
+        if (mounted.current) setNotice("Could not save project");
+      } finally {
+        saveDrain.current = null;
+      }
+    })();
+  };
+
+  const flushCheckpoint = async () => {
     if (checkpoint.current) window.clearTimeout(checkpoint.current);
     checkpoint.current = undefined;
-    if (project?.handle) void checkpointProject(project.handle);
+    await saveDrain.current;
+    const handle = projectHandle.current;
+    if (handle && !saveFailed.current) await checkpointProject(handle);
   };
 
   const persist = (next: SceneDocument) => {
     const source = serializeDocument(next);
     setDoc(next);
-    if (project?.handle) {
-      void saveProject(project.handle, source);
+    const handle = projectHandle.current;
+    if (handle) {
+      queueSave(handle, source);
       if (checkpoint.current) window.clearTimeout(checkpoint.current);
-      checkpoint.current = window.setTimeout(flushCheckpoint, 500);
+      checkpoint.current = window.setTimeout(() => void flushCheckpoint(), 500);
     }
   };
 
@@ -763,7 +809,11 @@ function App() {
       setNotice("That change is unavailable");
       return;
     }
-    setHistory((old) => commitHistory(old, result.document));
+    const key = historyKey(operations);
+    const now = Date.now();
+    const coalesce = key !== undefined && lastEdit.current?.key === key && now - lastEdit.current.at < 750;
+    setHistory((old) => coalesce ? { ...old, present: result.document, future: [] } : commitHistory(old, result.document));
+    lastEdit.current = key ? { key, at: now } : undefined;
     persist(result.document);
     setNotice(label);
   };
@@ -833,7 +883,9 @@ function App() {
 
   const openTexFile = async (file: File) => {
     if (!/\.(tex|tikz|latex)$/i.test(file.name)) return void importExternalFile(file);
+    if (file.size > MAX_SOURCE_BYTES) return setNotice("TikZ source is too large to open");
     try {
+      await flushCheckpoint();
       const text = await file.text();
       const parsed = parseTikz(text);
       if (parsed.errors.length) {
@@ -841,6 +893,7 @@ function App() {
         return;
       }
       await resetClaudeConversation();
+      lastEdit.current = undefined;
       setProject({ title: file.name });
       setDoc(parsed.document);
       setHistory(createHistory(parsed.document));
@@ -867,6 +920,7 @@ function App() {
   };
 
   const load = async (open = false) => {
+    await flushCheckpoint();
     const next = await (open ? openProject() : createProject());
     const parsed = parseTikz(next.source);
     if (parsed.errors.length) {
@@ -874,6 +928,7 @@ function App() {
       return;
     }
     await resetClaudeConversation();
+    lastEdit.current = undefined;
     setProject({ handle: next.handle, title: next.title });
     setDoc(parsed.document);
     setHistory(createHistory(parsed.document));
@@ -896,6 +951,7 @@ function App() {
   const undo = () => {
     const next = undoHistory(history);
     if (next === history) return;
+    lastEdit.current = undefined;
     setHistory(next);
     persist(next.present);
     setSelected([]);
@@ -905,6 +961,7 @@ function App() {
   const redo = () => {
     const next = redoHistory(history);
     if (next === history) return;
+    lastEdit.current = undefined;
     setHistory(next);
     persist(next.present);
     setSelected([]);
@@ -1015,9 +1072,26 @@ function App() {
     svg.current.setPointerCapture?.(event.pointerId);
   };
 
+  const queueDragPreview = (point: ScenePoint, snap: boolean) => {
+    queuedPointer.current = { point, snap };
+    if (dragFrame.current !== undefined) return;
+    dragFrame.current = requestFrame(() => {
+      dragFrame.current = undefined;
+      const value = drag.current;
+      const queued = queuedPointer.current;
+      if (!value || !queued) return;
+      const { preview, guides } = previewDrag(value, queued.point, nodes, queued.snap, canvasSize.width, canvasSize.height);
+      setDragPreview(preview);
+      setSmartGuides(guides);
+    });
+  };
+
   const finishDrag = (event: React.PointerEvent<SVGSVGElement>, cancel = false) => {
     const value = drag.current;
     if (!value || value.pointerId !== event.pointerId) return;
+    if (dragFrame.current !== undefined) cancelFrame(dragFrame.current);
+    dragFrame.current = undefined;
+    queuedPointer.current = undefined;
     const { preview } = previewDrag(value, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled && !event.ctrlKey, canvasSize.width, canvasSize.height);
     drag.current = null;
     setDragPreview(null);
@@ -1132,7 +1206,7 @@ function App() {
     else if (preview.mode === "rotate" && preview.rotation !== undefined)
       update({ type: "transform", id: preview.id, transform: { rotate: editorNumber(preview.rotation, 1) } }, "Rotate selection");
     else if (preview.dx || preview.dy) {
-      if (selected.length > 1 && selected.includes(preview.id)) {
+      if (selected.length > 1 && selectedSet.has(preview.id)) {
         transact("Move selection", selected.map((id) => ({ type: "move", id, dx: editorNumber(preview.dx), dy: editorNumber(preview.dy) })));
       } else {
         update({ type: "move", id: preview.id, dx: editorNumber(preview.dx), dy: editorNumber(preview.dy) }, "Move selection");
@@ -1233,6 +1307,7 @@ function App() {
     };
     const next: SceneDocument = { ...doc, revision: doc.revision + 1, nodes: doc.nodes.map(scaleNode) };
     setCanvasSize((s) => ({ width: Math.max(100, Math.round(targetCm * PX_PER_CM)), height: Math.max(100, Math.round(s.height * k)) }));
+    lastEdit.current = undefined;
     setHistory((old) => commitHistory(old, next));
     persist(next);
     setNotice(`Figure scaled to ${targetCm.toFixed(1)} cm wide`);
@@ -1261,6 +1336,7 @@ function App() {
   const placeImage = async (file?: File) => {
     if (!file || !project?.handle)
       return setNotice("Create a project before placing an image");
+    if (file.size > MAX_ASSET_BYTES) return setNotice("Image exceeds the project asset size limit");
     const name =
       file.name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(-120) || "image";
     await writeAsset(
@@ -1444,11 +1520,14 @@ function App() {
   });
 
   useEffect(() => () => {
-    if (checkpoint.current) {
-      window.clearTimeout(checkpoint.current);
-      const handle = projectHandle.current;
-      if (handle) void checkpointProject(handle);
-    }
+    mounted.current = false;
+    if (checkpoint.current) window.clearTimeout(checkpoint.current);
+    if (dragFrame.current !== undefined) cancelFrame(dragFrame.current);
+    const handle = projectHandle.current;
+    void (async () => {
+      await saveDrain.current;
+      if (handle) await checkpointProject(handle);
+    })();
   }, []);
 
   useEffect(() => {
@@ -1607,6 +1686,7 @@ function App() {
       if (!restored) return;
       const parsed = parseTikz(restored.source);
       if (!parsed.errors.length) {
+        lastEdit.current = undefined;
         setHistory(createHistory(parsed.document));
         persist(parsed.document);
         setNotice("Restored history");
@@ -1738,7 +1818,8 @@ function App() {
           <SourceTab
             doc={doc}
             onApplySource={(newDoc) => {
-              flushCheckpoint();
+              void flushCheckpoint();
+              lastEdit.current = undefined;
               setHistory(createHistory(newDoc));
               persist(newDoc);
               setSelected([]);
@@ -1757,7 +1838,7 @@ function App() {
             suggestion={suggestion}
             setSuggestion={setSuggestion}
             onApplyOperations={(label, ops) => {
-              flushCheckpoint();
+              void flushCheckpoint();
               transact(label, ops);
             }}
             onNotice={setNotice}
@@ -2163,9 +2244,10 @@ function App() {
               }}
               onPointerMove={(event) => {
                 if (drag.current?.pointerId === event.pointerId) {
-                  const { preview, guides } = previewDrag(drag.current, canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height), nodes, snapEnabled && !event.ctrlKey, canvasSize.width, canvasSize.height);
-                  setDragPreview(preview);
-                  setSmartGuides(guides);
+                  queueDragPreview(
+                    canvasPoint(event.currentTarget, event.clientX, event.clientY, canvasSize.width, canvasSize.height),
+                    snapEnabled && !event.ctrlKey,
+                  );
                 }
               }}
               onPointerUp={(event) => finishDrag(event)}
@@ -2198,7 +2280,7 @@ function App() {
                   const dash = style.dash === "dashed" || style.dash === "on 4pt off 3pt" ? "8 6" : style.dash === "dotted" || style.dash === "on 0pt off 2pt" ? "2 5" : undefined;
                   const markerStart = style.arrow === "<-" || style.arrow === "<->" ? "url(#arrow-start)" : undefined;
                   const markerEnd = style.arrow === "->" || style.arrow === "<->" || (node.kind === "connector" && style.arrow === undefined) ? "url(#arrow-end)" : undefined;
-                  const hasSuggestion = suggestion?.operations.some((op) => "id" in op && op.id === node.id);
+                  const hasSuggestion = suggestedIds.has(node.id);
 
                   return (
                     <g
@@ -2208,7 +2290,7 @@ function App() {
                       data-node-id={node.id}
                       transform={`translate(${(node.transform.translate.x + (preview?.mode === "move" ? preview.dx : 0)) * PX_PER_CM} ${-(node.transform.translate.y + (preview?.mode === "move" ? preview.dy : 0)) * PX_PER_CM}) rotate(${-(preview?.rotation ?? node.transform.rotate)} ${transformCenterX} ${transformCenterY}) translate(${transformCenterX} ${transformCenterY}) scale(${node.transform.xScale} ${node.transform.yScale}) translate(${-transformCenterX} ${-transformCenterY})`}
                       opacity={style.opacity ?? 1}
-                      className={`shape ${selected.includes(node.id) ? "selected" : ""} ${hasSuggestion ? "has-suggestion" : ""}`}
+                      className={`shape ${selectedSet.has(node.id) ? "selected" : ""} ${hasSuggestion ? "has-suggestion" : ""}`}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
                         if (["line", "path", "connector"].includes(node.kind) && rawPoints.length >= 2 && svg.current) {
@@ -2352,7 +2434,7 @@ function App() {
                       {hasSuggestion && (
                         <rect className="ghost-preview" x={x - 4} y={y - h - 4} width={w + 8} height={h + 8} />
                       )}
-                      {tool !== "connector" && selected.length === 1 && selected.includes(node.id) && !node.locked && g.width !== undefined && g.height !== undefined && (
+                      {tool !== "connector" && selected.length === 1 && selectedSet.has(node.id) && !node.locked && g.width !== undefined && g.height !== undefined && (
                         <>
                           <rect className="selection-box" x={x - 5} y={y - h - 5} width={w + 10} height={h + 10} />
                           <line className="selection-box" x1={x + w / 2} y1={y - h - 5} x2={x + w / 2} y2={y - h - 26} />
@@ -2362,7 +2444,7 @@ function App() {
                           <circle aria-label="Rotate handle" className="rotate-handle" cx={x + w / 2} cy={y - h - 26} r="6" onPointerDown={(event) => beginDrag(event, { id: node.id, mode: "rotate", rotation: node.transform.rotate, center: { x: x + w / 2 + node.transform.translate.x * PX_PER_CM, y: y - h / 2 - node.transform.translate.y * PX_PER_CM } })} />
                         </>
                       )}
-                      {tool !== "connector" && selected.includes(node.id) && !node.locked && (
+                      {tool !== "connector" && selectedSet.has(node.id) && !node.locked && (
                         <>
                           {node.bindings?.routing === "curved" && rawPoints.length === 3 && (
                             <line

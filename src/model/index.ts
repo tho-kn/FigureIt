@@ -118,12 +118,16 @@ const cloneTransform = (t: Transform): Transform => ({ translate: { ...t.transla
 
 const scan = (source: string): string[] => {
   const out: string[] = []
+  const scopePattern = /\s*\\(?:begin|end)\{scope\}[^\n]*(?:\n|$)/y
+  const commentPattern = /\s*%[^\n]*(?:\n|$)/y
+  const trailingCommentPattern = /[ \t]*%[^\n]*/y
   let at = 0
   while (at < source.length) {
-    const rest = source.slice(at)
-    const scope = rest.match(/^\s*\\(?:begin|end)\{scope\}[^\n]*(?:\n|$)/)
+    scopePattern.lastIndex = at
+    const scope = scopePattern.exec(source)
     if (scope) { out.push(scope[0]); at += scope[0].length; continue }
-    const comment = rest.match(/^\s*%[^\n]*(?:\n|$)/)
+    commentPattern.lastIndex = at
+    const comment = commentPattern.exec(source)
     if (comment) { out.push(comment[0]); at += comment[0].length; continue }
     let brace = 0
     let found = -1
@@ -134,7 +138,8 @@ const scan = (source: string): string[] => {
       if (source[i] === ';' && brace === 0) { found = i + 1; break }
     }
     if (found < 0) { out.push(source.slice(at)); break }
-    const trailingComment = source.slice(found).match(/^[ \t]*%[^\n]*/)?.[0] ?? ''
+    trailingCommentPattern.lastIndex = found
+    const trailingComment = trailingCommentPattern.exec(source)?.[0] ?? ''
     out.push(source.slice(at, found + trailingComment.length)); at = found + trailingComment.length
   }
   return out
@@ -188,7 +193,8 @@ const propertiesFor = (kind: NodeKind, source: string): Pick<SceneNode, 'geometr
   let routing: ConnectorBindings['routing'] | undefined = undefined
   if (/-\||\|-/.test(source)) routing = 'elbow'
   else if (/to\s*\[|controls\b|plot\s*\[\s*smooth/.test(source)) routing = 'curved'
-  return { ...(geometry ? { geometry } : {}), ...(styleFor(source) ? { style: styleFor(source) } : {}), ...(text !== undefined ? { text } : {}), ...(image ? { image } : {}), transform: scopeTransform(source), ...(routing ? { bindings: { routing } } : {}) }
+  const style = styleFor(source)
+  return { ...(geometry ? { geometry } : {}), ...(style ? { style } : {}), ...(text !== undefined ? { text } : {}), ...(image ? { image } : {}), transform: scopeTransform(source), ...(routing ? { bindings: { routing } } : {}) }
 }
 
 const scopeTransform = (source: string): Transform => {
@@ -203,11 +209,10 @@ const scopeTransform = (source: string): Transform => {
 
 export const parseTikz = (source: string): ParseResult => {
   const begin = source.search(/\\begin\{tikzpicture\}/)
-  const endMatch = [...source.matchAll(/\\end\{tikzpicture\}/g)].at(-1)
-  if (begin < 0 || !endMatch?.index) return { document: { revision: 0, prefix: '', nodes: [{ id: newId(), kind: 'raw', visible: true, locked: false, transform: identity(), prefix: '', source }], suffix: '' }, errors: ['Missing tikzpicture environment'] }
+  const end = source.lastIndexOf('\\end{tikzpicture}')
+  if (begin < 0 || end < begin) return { document: { revision: 0, prefix: '', nodes: [{ id: newId(), kind: 'raw', visible: true, locked: false, transform: identity(), prefix: '', source }], suffix: '' }, errors: ['Missing tikzpicture environment'] }
   const beginEnd = source.indexOf('}', begin) + 1
   const bodyStart = source[beginEnd] === '\n' ? beginEnd + 1 : beginEnd
-  const end = endMatch.index
   const prefix = source.slice(0, bodyStart)
   const suffix = source.slice(end)
   const roots: SceneNode[] = []
@@ -354,9 +359,15 @@ export const serializeDocument = (document: SceneDocument): string => {
 }
 export const createDefaultDocument = (): SceneDocument => parseTikz(DEFAULT_TIKZ_SOURCE).document
 
-const findNode = (nodes: SceneNode[], id: string): SceneNode | undefined => {
-  for (const node of nodes) { if (node.id === id) return node; const child = node.children && findNode(node.children, id); if (child) return child }
+export const findSceneNode = (nodes: SceneNode[], id: string): SceneNode | undefined => {
+  for (const node of nodes) { if (node.id === id) return node; const child = node.children && findSceneNode(node.children, id); if (child) return child }
   return undefined
+}
+const indexNodes = (nodes: SceneNode[]): Map<string, SceneNode> => {
+  const index = new Map<string, SceneNode>()
+  const visit = (items: SceneNode[]) => items.forEach((node) => { index.set(node.id, node); if (node.children) visit(node.children) })
+  visit(nodes)
+  return index
 }
 export const connectorAnchorPoint = (node: SceneNode, anchor: ConnectorAnchor): ScenePoint | undefined => {
   const geometry = node.geometry
@@ -413,12 +424,12 @@ export const nearestConnectorAnchor = (node: SceneNode, point: ScenePoint): Conn
   }
   return best ? { nodeId: node.id, anchor: best.anchor } : undefined
 }
-const resolveConnectorBindings = (nodes: SceneNode[], roots = nodes): SceneNode[] => nodes.map((node) => {
-  const children = node.children ? resolveConnectorBindings(node.children, roots) : undefined
+const resolveConnectorBindings = (nodes: SceneNode[], index = indexNodes(nodes)): SceneNode[] => nodes.map((node) => {
+  const children = node.children ? resolveConnectorBindings(node.children, index) : undefined
   if (node.kind !== 'connector' || !node.geometry?.points?.length) return children ? { ...node, children } : node
   const points = [...node.geometry.points]
-  const startNode = node.bindings?.start && findNode(roots, node.bindings.start.nodeId)
-  const endNode = node.bindings?.end && findNode(roots, node.bindings.end.nodeId)
+  const startNode = node.bindings?.start && index.get(node.bindings.start.nodeId)
+  const endNode = node.bindings?.end && index.get(node.bindings.end.nodeId)
   const start = startNode && node.bindings?.start ? connectorAnchorPoint(startNode, node.bindings.start.anchor) : undefined
   const end = endNode && node.bindings?.end ? connectorAnchorPoint(endNode, node.bindings.end.anchor) : undefined
   if (start) points[0] = start
@@ -429,30 +440,82 @@ const parentIdFor = (nodes: SceneNode[], id: string, parentId?: string): string 
   for (const node of nodes) { if (node.id === id) return parentId; const found = node.children && parentIdFor(node.children, id, node.id); if (found !== undefined) return found }
   return undefined
 }
-const listAt = (nodes: SceneNode[], parentId?: string): SceneNode[] | undefined => parentId === undefined ? nodes : findNode(nodes, parentId)?.kind === 'group' ? findNode(nodes, parentId)?.children : undefined
+const listAt = (nodes: SceneNode[], parentId?: string): SceneNode[] | undefined => {
+  if (parentId === undefined) return nodes
+  const parent = findSceneNode(nodes, parentId)
+  return parent?.kind === 'group' ? parent.children : undefined
+}
 const replaceList = (nodes: SceneNode[], parentId: string | undefined, list: SceneNode[]): SceneNode[] => parentId === undefined ? list : updateNode(nodes, parentId, (node) => ({ ...node, children: list }))
 const updateNode = (nodes: SceneNode[], id: string, change: (node: SceneNode) => SceneNode): SceneNode[] => nodes.map((node) => node.id === id ? change(node) : node.children ? { ...node, children: updateNode(node.children, id, change) } : node)
 const removeNode = (nodes: SceneNode[], id: string): SceneNode[] => nodes.filter((node) => node.id !== id).map((node) => node.children ? { ...node, children: removeNode(node.children, id) } : node)
 
+type NodeUpdateOperation = Extract<SceneOperation, { type: 'move' | 'transform' | 'set_metadata' | 'replace_source' | 'update_properties' }>
+const isNodeUpdate = (operation: SceneOperation): operation is NodeUpdateOperation => ['move', 'transform', 'set_metadata', 'replace_source', 'update_properties'].includes(operation.type)
+const applyNodeUpdate = (node: SceneNode, operation: NodeUpdateOperation): SceneNode => {
+  if (operation.type === 'move') {
+    if (node.geometry?.points) return { ...node, geometry: { ...node.geometry, points: node.geometry.points.map((point) => ({ x: point.x + operation.dx, y: point.y + operation.dy })) } }
+    if (node.geometry?.x !== undefined && node.geometry.y !== undefined) return { ...node, geometry: { ...node.geometry, x: node.geometry.x + operation.dx, y: node.geometry.y + operation.dy } }
+    return { ...node, transform: { ...node.transform, translate: { x: node.transform.translate.x + operation.dx, y: node.transform.translate.y + operation.dy } } }
+  }
+  if (operation.type === 'transform') return { ...node, transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } }
+  if (operation.type === 'set_metadata') return { ...node, ...(operation.name === undefined ? {} : { name: operation.name }), ...(operation.visible === undefined ? {} : { visible: operation.visible }), ...(operation.locked === undefined ? {} : { locked: operation.locked }) }
+  if (operation.type === 'update_properties') return { ...node, ...(operation.geometry ? { geometry: { ...node.geometry, ...operation.geometry } } : {}), ...(operation.style ? { style: { ...node.style, ...operation.style } } : {}), ...(operation.text === undefined ? {} : { text: operation.text }), ...(operation.image ? { image: { ...node.image, ...operation.image } as ImageProperties } : {}), ...(operation.bindings ? { bindings: operation.bindings } : {}), ...(operation.transform ? { transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } } : {}) }
+  return { ...node, source: operation.source }
+}
+const replaceNodes = (nodes: SceneNode[], replacements: Map<string, SceneNode>): SceneNode[] => nodes.map((node) => {
+  const replacement = replacements.get(node.id) ?? node
+  return replacement.children ? { ...replacement, children: replaceNodes(replacement.children, replacements) } : replacement
+})
+
 export const applySceneTransaction = (document: SceneDocument, transaction: SceneTransaction): TransactionResult => {
   if (transaction.baseRevision !== document.revision) return { ok: false, error: 'stale_revision' }
   let nodes = document.nodes
-  for (const operation of transaction.operations) {
+  for (let operationIndex = 0; operationIndex < transaction.operations.length; operationIndex += 1) {
+    const operation = transaction.operations[operationIndex]
+    if (operation.type === 'insert' && operation.parentId === undefined && operation.index === undefined) {
+      const inserts: SceneNode[] = []
+      while (operationIndex < transaction.operations.length) {
+        const next = transaction.operations[operationIndex]
+        if (next.type !== 'insert' || next.parentId !== undefined || next.index !== undefined) break
+        inserts.push(next.node)
+        operationIndex += 1
+      }
+      nodes = [...nodes, ...inserts]
+      operationIndex -= 1
+      continue
+    }
+    if (isNodeUpdate(operation)) {
+      const current = indexNodes(nodes)
+      const replacements = new Map<string, SceneNode>()
+      while (operationIndex < transaction.operations.length) {
+        const next = transaction.operations[operationIndex]
+        if (!isNodeUpdate(next)) break
+        const target = replacements.get(next.id) ?? current.get(next.id)
+        if (!target || target.kind === 'raw') return { ok: false, error: 'invalid_target' }
+        if (target.locked && next.type !== 'set_metadata') return { ok: false, error: 'locked' }
+        replacements.set(next.id, applyNodeUpdate(target, next))
+        operationIndex += 1
+      }
+      nodes = replaceNodes(nodes, replacements)
+      operationIndex -= 1
+      continue
+    }
     if (operation.type === 'group') {
       const list = listAt(nodes, operation.parentId)
-      const selected = list?.filter((node) => operation.childIds.includes(node.id))
-      if (!list || selected?.length !== operation.childIds.length || selected.some((node) => node.kind === 'raw' || node.locked)) return { ok: false, error: 'invalid_target' }
+      const childIds = new Set(operation.childIds)
+      const selected = list?.filter((node) => childIds.has(node.id))
+      if (!list || !selected?.length || selected.length !== operation.childIds.length || selected.some((node) => node.kind === 'raw' || node.locked)) return { ok: false, error: 'invalid_target' }
       const first = selected[0]
       const group: SceneNode = { id: operation.id ?? newId(), kind: 'group', name: operation.name, visible: true, locked: false, transform: identity(), prefix: first.prefix, source: '\n\\end{scope}', children: [{ ...first, prefix: '' }, ...selected.slice(1)] }
       let inserted = false
       nodes = replaceList(nodes, operation.parentId, list.reduce<SceneNode[]>((result, node) => {
-        if (operation.childIds.includes(node.id)) { if (!inserted) { result.push(group); inserted = true } return result }
+        if (childIds.has(node.id)) { if (!inserted) { result.push(group); inserted = true } return result }
         result.push(node); return result
       }, []))
       continue
     }
     if (operation.type === 'ungroup') {
-      const group = findNode(nodes, operation.id)
+      const group = findSceneNode(nodes, operation.id)
       const parentId = parentIdFor(nodes, operation.id)
       const list = listAt(nodes, parentId)
       if (!group || group.kind !== 'group' || group.locked || !list) return { ok: false, error: 'invalid_target' }
@@ -461,7 +524,7 @@ export const applySceneTransaction = (document: SceneDocument, transaction: Scen
       continue
     }
     if (operation.type === 'reorder') {
-      const target = findNode(nodes, operation.id)
+      const target = findSceneNode(nodes, operation.id)
       const parentId = operation.parentId ?? parentIdFor(nodes, operation.id)
       const list = listAt(nodes, parentId)
       if (!target || target.kind === 'raw' || target.locked || !list || !list.some((node) => node.id === operation.id)) return { ok: false, error: 'invalid_target' }
@@ -470,27 +533,16 @@ export const applySceneTransaction = (document: SceneDocument, transaction: Scen
       continue
     }
     if (operation.type === 'insert') {
-      const destination = operation.parentId ? findNode(nodes, operation.parentId) : undefined
+      const destination = operation.parentId ? findSceneNode(nodes, operation.parentId) : undefined
       if (operation.parentId && (!destination || destination.kind !== 'group' || destination.locked)) return { ok: false, error: 'invalid_target' }
       const insert = (list: SceneNode[]) => [...list.slice(0, operation.index ?? list.length), operation.node, ...list.slice(operation.index ?? list.length)]
       nodes = operation.parentId ? updateNode(nodes, operation.parentId, (node) => ({ ...node, children: insert(node.children ?? []) })) : insert(nodes)
       continue
     }
-    const target = findNode(nodes, operation.id)
+    const target = findSceneNode(nodes, operation.id)
     if (!target || target.kind === 'raw') return { ok: false, error: 'invalid_target' }
-    if (target.locked && operation.type !== 'set_metadata') return { ok: false, error: 'locked' }
+    if (target.locked) return { ok: false, error: 'locked' }
     if (operation.type === 'delete') { nodes = removeNode(nodes, operation.id); continue }
-    nodes = updateNode(nodes, operation.id, (node) => {
-      if (operation.type === 'move') {
-        if (node.geometry?.points) return { ...node, geometry: { ...node.geometry, points: node.geometry.points.map((point) => ({ x: point.x + operation.dx, y: point.y + operation.dy })) } }
-        if (node.geometry?.x !== undefined && node.geometry.y !== undefined) return { ...node, geometry: { ...node.geometry, x: node.geometry.x + operation.dx, y: node.geometry.y + operation.dy } }
-        return { ...node, transform: { ...node.transform, translate: { x: node.transform.translate.x + operation.dx, y: node.transform.translate.y + operation.dy } } }
-      }
-      if (operation.type === 'transform') return { ...node, transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } }
-      if (operation.type === 'set_metadata') return { ...node, ...(operation.name === undefined ? {} : { name: operation.name }), ...(operation.visible === undefined ? {} : { visible: operation.visible }), ...(operation.locked === undefined ? {} : { locked: operation.locked }) }
-      if (operation.type === 'update_properties') return { ...node, ...(operation.geometry ? { geometry: { ...node.geometry, ...operation.geometry } } : {}), ...(operation.style ? { style: { ...node.style, ...operation.style } } : {}), ...(operation.text === undefined ? {} : { text: operation.text }), ...(operation.image ? { image: { ...node.image, ...operation.image } as ImageProperties } : {}), ...(operation.bindings ? { bindings: operation.bindings } : {}), ...(operation.transform ? { transform: { ...node.transform, ...operation.transform, translate: operation.transform.translate ? { ...operation.transform.translate } : node.transform.translate } } : {}) }
-      return { ...node, source: operation.source }
-    })
   }
   return { ok: true, document: { ...document, revision: document.revision + 1, nodes: resolveConnectorBindings(nodes) } }
 }

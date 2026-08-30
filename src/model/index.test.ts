@@ -245,6 +245,25 @@ describe('TikZ scene document', () => {
     expect(applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'set_metadata', id: 'default-rect', locked: false }] }).document?.nodes[0].locked).toBe(false)
   })
 
+  it('applies batched updates in order and appends imported nodes in one transaction', () => {
+    const document = createDefaultDocument()
+    document.nodes[0].locked = true
+    const first = { ...structuredClone(document.nodes[0]), id: 'import-1', locked: false }
+    const second = { ...structuredClone(first), id: 'import-2' }
+    const changed = applySceneTransaction(document, {
+      baseRevision: 0,
+      operations: [
+        { type: 'set_metadata', id: 'default-rect', locked: false },
+        { type: 'move', id: 'default-rect', dx: 2, dy: 1 },
+        { type: 'transform', id: 'default-rect', transform: { rotate: 15 } },
+        { type: 'insert', node: first },
+        { type: 'insert', node: second },
+      ],
+    }).document!
+    expect(changed.nodes[0]).toMatchObject({ locked: false, geometry: { x: 2, y: 1 }, transform: { rotate: 15 } })
+    expect(changed.nodes.map((node) => node.id)).toEqual(['default-rect', 'import-1', 'import-2'])
+  })
+
   it('serializes flips around the object centre and preserves the editable transform', () => {
     const document = createDefaultDocument()
     const flipped = applySceneTransaction(document, { baseRevision: 0, operations: [{ type: 'transform', id: 'default-rect', transform: { xScale: -1 } }] }).document!
@@ -291,4 +310,3 @@ describe('TikZ scene document', () => {
     expect(parseTikz(source).document.nodes[0].text).toBe('Server Box')
   })
 })
-
